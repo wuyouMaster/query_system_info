@@ -35,9 +35,6 @@ mod linux {
     
         let mut buf = vec![0; packet.header.length as usize];
     
-        // Before calling serialize, it is important to check that the buffer in
-        // which we're emitting is big enough for the packet, other
-        // `serialize()` panics.
         assert_eq!(buf.len(), packet.buffer_len());
     
         packet.serialize(&mut buf[..]);

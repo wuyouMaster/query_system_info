@@ -63,6 +63,9 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
 mod linux {
     use super::*;
     use std::fs;
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static CPU_REGEX: OnceLock<Regex> = OnceLock::new();
 
     pub fn get_cpu_info() -> Result<CpuInfo> {
         let mut info = CpuInfo::default();
@@ -118,9 +121,9 @@ mod linux {
     pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
         let stat = fs::read_to_string("/proc/stat")?;
         let mut times = Vec::new();
-
+        let cpu_regex = CPU_REGEX.get_or_init(|| Regex::new(r"cpu\d+").expect("Failed to create CPU regex"));
         for line in stat.lines() {
-            if line.starts_with("cpu ") {
+            if cpu_regex.is_match(line) {
                 let mut time = CpuTimes::default();
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 time.user = parts[0].parse().unwrap_or(0);
@@ -420,5 +423,6 @@ mod tests {
             times.len() > 0 && (times[0].user > 0 || times[0].system > 0 || times[0].idle > 0),
             "CPU times should have some activity"
         );
+        println!("CPU times: {:?}", times);
     }
 }

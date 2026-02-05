@@ -11,6 +11,7 @@ categories = ["os", "api-bindings"]
 [dependencies]
 thiserror = "1.0"
 libproc = {version = "*" }
+regex = "1.12.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "*"

@@ -10,7 +10,6 @@ categories = ["os", "api-bindings"]
 
 [dependencies]
 thiserror = "1.0"
-libproc = {version = "*" }
 regex = "1.12.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -24,6 +23,7 @@ anyhow = "1.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 mach2 = "0.4"
+libproc = {version = "*" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [

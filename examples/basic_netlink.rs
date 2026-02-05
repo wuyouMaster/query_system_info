@@ -42,9 +42,7 @@ mod linux {
     
         packet.serialize(&mut buf[..]);
     
-        println!(">>> {packet:?}");
         if let Err(e) = socket.send(&buf[..], 0) {
-            println!("SEND ERROR {e}");
             return;
         }
     
@@ -55,7 +53,6 @@ mod linux {
                 let bytes = &receive_buffer[offset..];
                 let rx_packet =
                     <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
-                println!("<<< {rx_packet:?}");
     
                 match rx_packet.payload {
                     NetlinkPayload::Noop => {}

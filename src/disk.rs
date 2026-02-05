@@ -379,7 +379,7 @@ mod windows {
         Ok(DiskInfo {
             device: drive_str.to_string(),
             mount_point: drive_str.to_string(),
-            fs_type: "NTFS".to_string(), // Simplified
+            fs_type: "NTFS".to_string(),
             total_bytes,
             used_bytes,
             available_bytes: free_bytes_available,

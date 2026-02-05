@@ -154,7 +154,7 @@ fn main() -> query_system_info::Result<()> {
 
     // Get established connections from the HashMap
     if let Some(established_conns) = tcp_conns.get(&SocketState::Established) {
-        println!("len: {}", established_conns.len());
+        println!("state: {:?}, len: {}", SocketState::Established, established_conns.len());
         for item in established_conns.iter() {
             println!("item: {:?}", item);
         }

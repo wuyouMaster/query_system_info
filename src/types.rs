@@ -309,7 +309,7 @@ impl SocketStateSummary {
     /// Create summary from a list of socket connections
     pub fn from_connections(connections: &Vec<&SocketConnection>) -> Self {
         let mut summary = Self::default();
-        summary.total = connections.len();
+        summary.total += connections.len();
 
         for conn in connections {
             match conn.state {

@@ -8,13 +8,9 @@
 //! - **Windows**: Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from IP Helper API
 
 use crate::error::{Result, SysInfoError};
-use crate::types::{SocketConnection, SocketProtocol, SocketState, SocketStateSummary, XinpGen, XTcpInfo};
-use crate::util::read_u32;
-use crate::util::read_u32_as_usize;
-use crate::util::read_i32;
+use crate::types::{SocketConnection, SocketProtocol, SocketState, SocketStateSummary};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::collections::HashMap;
-use std::convert::TryFrom;
 
 /// Get all TCP connections (IPv4 and IPv6)
 pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
@@ -113,13 +109,16 @@ pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    use std::fs;
+    use netlink_packet_core::{
+        NetlinkHeader, NetlinkMessage, NetlinkPayload, NLM_F_DUMP, NLM_F_REQUEST,
+    };
     use netlink_packet_sock_diag::{
         constants::*,
-        inet::{ExtensionFlags, InetRequest, InetResponse, SocketId, StateFlags},
-        NetlinkHeader, NetlinkMessage, NetlinkPayload, SockDiagMessage,
+        inet::{ExtensionFlags, InetRequest, SocketId, StateFlags},
+        SockDiagMessage,
     };
     use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr as NetlinkSocketAddr};
-    use std::fs;
 
     /// TCP state mapping from kernel values to our enum
     fn tcp_state_from_kernel(state: u8) -> SocketState {
@@ -140,145 +139,126 @@ mod linux {
     }
 
     pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections(AF_INET as u8, IPPROTO_TCP, SocketProtocol::TcpV4)
+        get_inet_connections( SocketProtocol::TcpV4)
     }
 
     pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections(AF_INET6 as u8, IPPROTO_TCP, SocketProtocol::TcpV6)
+        get_inet_connections( SocketProtocol::TcpV6)
     }
 
     pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections(AF_INET as u8, IPPROTO_UDP, SocketProtocol::UdpV4)
+        get_inet_connections( SocketProtocol::UdpV4)
     }
     
     pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections(AF_INET6 as u8, IPPROTO_UDP, SocketProtocol::UdpV6)
+        get_inet_connections( SocketProtocol::UdpV6)
     }
     
     fn get_inet_connections(
-        family: u8,
-        protocol: u8,
         proto_type: SocketProtocol,
     ) -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        let mut socket = Socket::new(NETLINK_SOCK_DIAG)
-            .map_err(|e| SysInfoError::Netlink(format!("Failed to create netlink socket: {}", e)))?;
-
-        socket
-            .bind_auto()
-            .map_err(|e| SysInfoError::Netlink(format!("Failed to bind netlink socket: {}", e)))?;
-
-        socket
-            .connect(&NetlinkSocketAddr::new(0, 0))
-            .map_err(|e| SysInfoError::Netlink(format!("Failed to connect netlink socket: {}", e)))?;
-
-        // Create the request
-        let mut request = InetRequest {
-            family,
-            protocol,
-            extensions: ExtensionFlags::empty(),
-            states: StateFlags::all(),
-            socket_id: SocketId::new_v4(),
-        };
-
-        if family == AF_INET6 as u8 {
-            request.socket_id = SocketId::new_v6();
-        }
-
-        let mut nl_msg = NetlinkMessage::from(SockDiagMessage::InetRequest(request));
-        nl_msg.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
-        nl_msg.header.sequence_number = 1;
-        nl_msg.finalize();
-
-        let mut buf = vec![0u8; nl_msg.buffer_len()];
-        nl_msg.serialize(&mut buf);
-
-        socket
-            .send(&buf, 0)
-            .map_err(|e| SysInfoError::Netlink(format!("Failed to send netlink request: {}", e)))?;
-
         let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-        let mut recv_buf = vec![0u8; 65536];
+        let mut socket = Socket::new(NETLINK_SOCK_DIAG).unwrap();
+        let _port_number = socket.bind_auto().unwrap().port_number();
+        socket.connect(&NetlinkSocketAddr::new(0, 0)).unwrap();
 
-        loop {
-            let n = socket
-                .recv(&mut recv_buf, 0)
-                .map_err(|e| SysInfoError::Netlink(format!("Failed to receive netlink response: {}", e)))?;
-
-            if n == 0 {
-                break;
+        let mut nl_hdr = NetlinkHeader::default();
+        nl_hdr.flags = NLM_F_REQUEST | NLM_F_DUMP;
+        let use_protocol;
+        let use_family;
+        let use_socket_id;
+        match proto_type {
+            SocketProtocol::TcpV4 => {
+                use_protocol = IPPROTO_TCP;
+                use_family = AF_INET;
+                use_socket_id = SocketId::new_v4();
             }
-
-            let mut offset = 0;
-            while offset < n {
-                let rx_msg = NetlinkMessage::<SockDiagMessage>::deserialize(&recv_buf[offset..])
-                    .map_err(|e| SysInfoError::Netlink(format!("Failed to deserialize message: {}", e)))?;
-
-                match rx_msg.payload {
-                    NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
-                        if let Some(conn) = parse_inet_response(&response, proto_type) {
-                            connections.entry(conn.state.clone()).or_insert(Vec::new()).push(conn);
-                        }
-                    }
-                    _ => {}
-                }
-
-                offset += rx_msg.header.length as usize;
+            SocketProtocol::TcpV6 => {
+                use_protocol = IPPROTO_TCP;
+                use_family = AF_INET6;
+                use_socket_id = SocketId::new_v6();
+            }
+            SocketProtocol::UdpV4 => {
+                use_protocol = IPPROTO_UDP;
+                use_family = AF_INET;
+                use_socket_id = SocketId::new_v4();
+            }
+            SocketProtocol::UdpV6 => {
+                use_protocol = IPPROTO_UDP;
+                use_family = AF_INET6;
+                use_socket_id = SocketId::new_v6();
             }
         }
-
+        let mut packet = NetlinkMessage::new(
+            nl_hdr,
+            SockDiagMessage::InetRequest(InetRequest {
+                family: use_family,
+                protocol: use_protocol,
+                extensions: ExtensionFlags::empty(),
+                states: StateFlags::all(),
+                socket_id: use_socket_id,
+            })
+            .into(),
+        );
+        packet.finalize();
+        let mut buf = vec![0; packet.header.length as usize];
+        packet.serialize(&mut buf[..]);
+        if let Err(e) = socket.send(&buf[..], 0) {
+            return Err(e.into());
+        }
+        let mut receive_buffer = vec![0; 4096];
+        let mut offset = 0;
+        while let Ok(size) = socket.recv(&mut &mut receive_buffer[..], 0) {
+            loop {
+                let bytes = &receive_buffer[offset..];
+                let rx_packet =
+                    <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
+                match rx_packet.payload {
+                    NetlinkPayload::Noop => {}
+                    NetlinkPayload::InnerMessage(
+                        SockDiagMessage::InetResponse(response),
+                    ) => {
+                        let state = tcp_state_from_kernel(response.header.state);
+                        let local_ip = response.header.socket_id.source_address;
+                        let local_port = response.header.socket_id.source_port;
+                        let remote_ip = response.header.socket_id.destination_address;
+                        let remote_port = response.header.socket_id.destination_port;
+                        
+                        let local_addr = std::net::SocketAddr::new(local_ip, local_port);
+                        let remote_addr = if remote_port != 0 {
+                            Some(std::net::SocketAddr::new(remote_ip, remote_port))
+                        } else {
+                            None
+                        };
+                        
+                        let conn = SocketConnection {
+                            protocol: proto_type,
+                            local_addr,
+                            remote_addr,
+                            state,
+                            pid: None,
+                            inode: response.header.inode as u64,
+                        };
+                        connections.entry(state).or_insert(Vec::new()).push(conn);
+                    }
+                    NetlinkPayload::Done(_) => {
+                        // All data received, return results
+                        return Ok(connections);
+                    }
+                    _ => {
+                        // Unexpected message, return what we have
+                        return Ok(connections);
+                    }
+                }
+                offset += rx_packet.header.length as usize;
+                if offset == size || rx_packet.header.length == 0 {
+                    offset = 0;
+                    break;
+                }
+            }
+        }
         Ok(connections)
     }
-
-    fn parse_inet_response(
-        response: &InetResponse,
-        protocol: SocketProtocol,
-    ) -> Option<SocketConnection> {
-        let header = &response.header;
-        let socket_id = &header.socket_id;
-
-        let (local_ip, remote_ip): (IpAddr, IpAddr) = match protocol {
-            SocketProtocol::TcpV4 | SocketProtocol::UdpV4 => {
-                let local = Ipv4Addr::from(socket_id.source_address[0].to_be_bytes());
-                let remote = Ipv4Addr::from(socket_id.destination_address[0].to_be_bytes());
-                (IpAddr::V4(local), IpAddr::V4(remote))
-            }
-            SocketProtocol::TcpV6 | SocketProtocol::UdpV6 => {
-                let mut local_bytes = [0u8; 16];
-                let mut remote_bytes = [0u8; 16];
-
-                for (i, &val) in socket_id.source_address.iter().enumerate() {
-                    local_bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_be_bytes());
-                }
-                for (i, &val) in socket_id.destination_address.iter().enumerate() {
-                    remote_bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_be_bytes());
-                }
-
-                (
-                    IpAddr::V6(Ipv6Addr::from(local_bytes)),
-                    IpAddr::V6(Ipv6Addr::from(remote_bytes)),
-                )
-            }
-        };
-
-        let local_addr = SocketAddr::new(local_ip, socket_id.source_port);
-        let remote_addr = if socket_id.destination_port != 0 {
-            Some(SocketAddr::new(remote_ip, socket_id.destination_port))
-        } else {
-            None
-        };
-
-        let state = tcp_state_from_kernel(header.state);
-
-        Some(SocketConnection {
-            protocol,
-            local_addr,
-            remote_addr,
-            state,
-            pid: None, // Would need INET_DIAG_INFO extension
-            inode: header.inode as u64,
-        })
-    }
-
     /// Fallback: Parse /proc/net/tcp for socket information
     /// Used when netlink is not available or for debugging
     #[allow(dead_code)]
@@ -325,7 +305,7 @@ mod linux {
         })
     }
 
-    fn parse_hex_addr(s: &str) -> Option<SocketAddr> {
+    fn parse_hex_addr(s: &str) -> Option<std::net::SocketAddr> {
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 2 {
             return None;
@@ -338,14 +318,14 @@ mod linux {
             // IPv4
             let ip = u32::from_str_radix(ip_hex, 16).ok()?;
             let ip = Ipv4Addr::from(ip.to_le());
-            Some(SocketAddr::new(IpAddr::V4(ip), port))
+            Some(std::net::SocketAddr::new(IpAddr::V4(ip), port))
         } else if ip_hex.len() == 32 {
             // IPv6
             let mut bytes = [0u8; 16];
             for i in 0..16 {
                 bytes[i] = u8::from_str_radix(&ip_hex[i * 2..i * 2 + 2], 16).ok()?;
             }
-            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(bytes)), port))
+            Some(std::net::SocketAddr::new(IpAddr::V6(Ipv6Addr::from(bytes)), port))
         } else {
             None
         }

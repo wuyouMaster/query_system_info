@@ -13,9 +13,12 @@ thiserror = "1.0"
 libproc = {version = "*" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc = "*"
+netlink-packet-core = "0.7.0"
 netlink-packet-sock-diag = "0.4"
 netlink-sys = "0.8"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

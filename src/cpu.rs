@@ -122,13 +122,14 @@ mod linux {
         for line in stat.lines() {
             if line.starts_with("cpu ") {
                 let mut time = CpuTimes::default();
+                let parts: Vec<&str> = line.split_whitespace().collect();
                 time.user = parts[0].parse().unwrap_or(0);
                 time.nice = parts[1].parse().unwrap_or(0);
                 time.system = parts[2].parse().unwrap_or(0);
                 time.idle = parts[3].parse().unwrap_or(0);
-                time.iowait = parts.get(4).copied().unwrap_or(0);
-                time.irq = parts.get(5).copied().unwrap_or(0);
-                time.softirq = parts.get(6).copied().unwrap_or(0);
+                time.iowait = parts[4].parse().unwrap_or(0);
+                time.irq = parts[5].parse().unwrap_or(0);
+                time.softirq = parts[6].parse().unwrap_or(0);
                 times.push(time);
             }
         }

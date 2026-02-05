@@ -216,6 +216,27 @@ impl TryFrom<i32> for SocketState {
     }
 }
 
+impl TryFrom<&str> for SocketState {
+    type Error = ();
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_uppercase().as_str() {
+            "ESTABLISHED" => Ok(SocketState::Established),
+            "SYN_SENT" => Ok(SocketState::SynSent),
+            "SYN_RECV" => Ok(SocketState::SynReceived),
+            "FIN_WAIT1" => Ok(SocketState::FinWait1),
+            "FIN_WAIT2" => Ok(SocketState::FinWait2),
+            "TIME_WAIT" => Ok(SocketState::TimeWait),
+            "CLOSED" => Ok(SocketState::Closed),
+            "CLOSE_WAIT" => Ok(SocketState::CloseWait),
+            "LAST_ACK" => Ok(SocketState::LastAck),
+            "LISTEN" => Ok(SocketState::Listen),
+            "CLOSING" => Ok(SocketState::Closing),
+            "UNKNOWN" => Ok(SocketState::Unknown),
+            _ => Err(()),
+        }
+    }
+}
+
 impl std::fmt::Display for SocketState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

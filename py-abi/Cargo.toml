@@ -1,0 +1,17 @@
+[package]
+name = "py-abi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+query_system_info = { path = ".." }
+pyo3 = "*"
+
+[lib]
+name = "py_abi"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+lto   = true
+strip = "symbols"

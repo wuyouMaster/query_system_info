@@ -351,7 +351,7 @@ mod windows {
             GetSystemInfo(&mut system_info);
 
             info.logical_cores = system_info.dwNumberOfProcessors;
-            info.physical_cores = system_info.dwNumberOfProcessors; // Simplified
+            info.physical_cores = system_info.dwNumberOfProcessors;
 
             // Get processor name from registry
             info.model_name = get_cpu_name_from_registry().unwrap_or_else(|_| "Unknown".to_string());

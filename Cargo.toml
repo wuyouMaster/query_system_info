@@ -8,6 +8,13 @@ repository = "https://github.com/yourusername/query_system_info"
 keywords = ["system", "monitor", "cross-platform", "sysinfo"]
 categories = ["os", "api-bindings"]
 
+[workspace]
+members = [
+    ".",
+    "js-abi",
+    "py-abi",
+]
+
 [dependencies]
 thiserror = "1.0"
 regex = "1.12.3"

@@ -1,0 +1,23 @@
+{
+    "name": "js-query-system-info",
+    "version": "0.1.0",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "n-api": {
+        "name": "js-query-system-info",
+        "version": "0.1.0"
+    },
+    "scripts": {
+        "build": "napi build --release --output-dir ../dist",
+        "release": "napi build --release --output-dir ../dist --js index.js --dts index.d.ts"
+    },
+    "dependencies": {
+        "query_system_info": "file:..",
+        "napi": "^3.0.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.0.0",
+        "ts-node": "^10.0.0",
+        "tsconfig-paths": "^4.0.0"
+    }
+}

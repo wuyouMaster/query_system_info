@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A cross-platform library for querying system information including memory, CPU, processes, disk I/O, and socket connections"
 license = "MIT"
-repository = "https://github.com/yourusername/query_system_info"
+repository = "https://github.com/wuyouMaster/query_system_info"
 keywords = ["system", "monitor", "cross-platform", "sysinfo"]
 categories = ["os", "api-bindings"]
 
@@ -51,3 +51,7 @@ tokio = { version = "1.0", features = ["full"] }
 [[example]]
 name = "basic_usage"
 path = "examples/basic_usage.rs"
+
+[profile.release]
+lto   = true
+strip = "symbols"

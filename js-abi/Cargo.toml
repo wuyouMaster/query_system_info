@@ -11,10 +11,6 @@ napi-derive = "3.0.0"
 [build-dependencies]
 napi-build = "2"
 
-[profile.release]
-lto   = true
-strip = "symbols"
-
 [lib]
 name = "js_abi"
 path = "src/lib.rs"

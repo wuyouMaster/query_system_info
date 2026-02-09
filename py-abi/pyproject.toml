@@ -10,6 +10,7 @@ authors = [
     { name = "wuyoumaster", email = "wuyoumaster@gmail.com" }
 ]
 license = "MIT"
+
 dependencies = [
     "query_system_info",
 ]

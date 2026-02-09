@@ -217,6 +217,66 @@ impl PySystemSummary {
     pub fn get_connection_by_state(&self, state: String) -> PySocketConnection {
         self.connections.iter().find(|c| c.state == state).unwrap().clone()
     }
+    pub fn get_cpu_usage(&self) -> Vec<f64> {
+        self.cpu_usage.clone()
+    }
+    pub fn get_cpu_info(&self) -> PyCpuInfo {
+        self.cpu.clone()
+    }
+    pub fn get_memory_info(&self) -> PyMemoryInfo {
+        self.memory.clone()
+    }
+    pub fn get_disks(&self) -> Vec<PyDiskInfo> {
+        self.disks.clone()
+    }
+    pub fn get_socket_summary(&self) -> PySocketStateSummary {
+        self.socket_summary.clone()
+    }
+}
+
+#[pyfunction]
+pub fn get_system_summary(sample_duration: Option<u64>) -> PySystemSummary {
+    PySystemSummary::new(sample_duration)
+}
+
+#[pyfunction]
+pub fn py_get_cpu_usage(sample_duration: Option<u64>) -> Vec<f64> {
+    get_cpu_usage(Duration::from_secs(sample_duration.unwrap_or(1))).unwrap()
+}
+#[pyfunction]
+pub fn py_get_cpu_info() -> PyCpuInfo {
+    let cpu_info = get_cpu_info().unwrap();
+    PyCpuInfo {
+        physical_cores: cpu_info.physical_cores,
+        logical_cores: cpu_info.logical_cores,
+        model_name: cpu_info.model_name,
+        vendor: cpu_info.vendor,
+        frequency_mhz: cpu_info.frequency_mhz,
+    }
+}
+#[pyfunction]
+pub fn py_get_memory_info() -> PyMemoryInfo {
+    let memory_info = get_memory_info().unwrap();
+    PyMemoryInfo {
+        total: memory_info.total,
+        available: memory_info.available,
+        used: memory_info.used,
+        free: memory_info.free,
+        usage_percent: memory_info.usage_percent,
+    }
+}
+#[pyfunction]
+pub fn py_get_disks() -> Vec<PyDiskInfo> {
+    let disks = get_disks().unwrap();
+    disks.iter().map(|d| PyDiskInfo {
+        device: d.device.clone(),
+        mount_point: d.mount_point.clone(),
+        fs_type: d.fs_type.clone(),
+        total_bytes: d.total_bytes,
+        used_bytes: d.used_bytes,
+        available_bytes: d.available_bytes,
+        usage_percent: d.usage_percent,
+    }).collect()
 }
 
 #[pyfunction]

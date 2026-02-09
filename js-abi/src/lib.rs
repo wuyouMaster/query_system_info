@@ -72,20 +72,22 @@ pub struct JsSocketConnection {
     pub inode: f64,
 }   
 
-#[napi(object)]
+#[napi]
 #[derive(Clone)]
 pub struct JsSystemSummary {
-    pub memory: JsMemoryInfo,
-    pub cpu: JsCpuInfo,
-    pub disks: Vec<JsDiskInfo>,
-    pub socket_summary: JsSocketStateSummary,
-    pub connections: Vec<JsSocketConnection>,
-    pub processes: Vec<JsProcessInfo>,
-    pub process_count: f64,
-    pub cpu_usage: Vec<f64>,
+    memory: JsMemoryInfo,
+    cpu: JsCpuInfo,
+    disks: Vec<JsDiskInfo>,
+    socket_summary: JsSocketStateSummary,
+    connections: Vec<JsSocketConnection>,
+    processes: Vec<JsProcessInfo>,
+    process_count: f64,
+    cpu_usage: Vec<f64>,
 }
 
+#[napi]
 impl JsSystemSummary {
+    #[napi(constructor)]
     pub fn new(duration: Option<f64>) -> Self {
         let memory = get_memory_info().unwrap();
         let cpu = get_cpu_info().unwrap();
@@ -147,40 +149,124 @@ impl JsSystemSummary {
         }
     }
 
+    #[napi]
     pub fn get_connections(&self) -> Vec<JsSocketConnection> {
         self.connections.clone()
     }
 
+    #[napi]
     pub fn get_processes(&self) -> Vec<JsProcessInfo> {
         self.processes.clone()
     }
 
+    #[napi]
     pub fn get_process_count(&self) -> f64 {
         self.process_count
     }
 
+    #[napi]
     pub fn get_cpu_usage(&self) -> Vec<f64> {
         self.cpu_usage.clone()
     }
 
+    #[napi]
     pub fn get_connection_by_pid(&self, pid: f64) -> JsSocketConnection {
         self.connections.iter().find(|c| c.pid == pid).unwrap().clone()
     }
 
+    #[napi]
     pub fn get_connection_by_inode(&self, inode: f64) -> JsSocketConnection {
         self.connections.iter().find(|c| c.inode == inode).unwrap().clone()
     }
 
+    #[napi]
     pub fn get_connection_by_local_addr(&self, local_addr: String) -> JsSocketConnection {
         self.connections.iter().find(|c| c.local_addr == local_addr).unwrap().clone()
     }
 
+    #[napi]
     pub fn get_connection_by_remote_addr(&self, remote_addr: String) -> JsSocketConnection {
         self.connections.iter().find(|c| c.remote_addr == remote_addr).unwrap().clone()
     }
 
+    #[napi]
     pub fn get_connection_by_state(&self, state: String) -> Vec<JsSocketConnection> {
         self.connections.iter().filter(|c| c.state == state).map(|c| c.clone()).collect()
+    }
+
+    #[napi]
+    pub fn get_cpu_info(&self) -> JsCpuInfo {
+        self.cpu.clone()
+    }
+
+    #[napi]
+    pub fn get_memory_info(&self) -> JsMemoryInfo {
+        self.memory.clone()
+    }
+
+    #[napi]
+    pub fn get_disks(&self) -> Vec<JsDiskInfo> {
+        self.disks.clone()
+    }
+
+    #[napi]
+    pub fn get_socket_summary(&self) -> JsSocketStateSummary {
+        self.socket_summary.clone()
+    }
+}
+
+#[napi]
+pub fn js_get_cpu_usage(duration: Option<f64>) -> Vec<f64> {
+    get_cpu_usage(Duration::from_secs(duration.unwrap_or(1.0) as u64)).unwrap()
+}
+
+#[napi]
+pub fn js_get_cpu_info() -> JsCpuInfo {
+    let cpu_info = get_cpu_info().unwrap();
+    JsCpuInfo {
+        physical_cores: cpu_info.physical_cores,
+        logical_cores: cpu_info.logical_cores,
+        model_name: cpu_info.model_name,
+        vendor: cpu_info.vendor,
+        frequency_mhz: cpu_info.frequency_mhz as f64,
+    }
+}
+
+#[napi]
+pub fn js_get_memory_info() -> JsMemoryInfo {
+    let memory_info = get_memory_info().unwrap();
+    JsMemoryInfo {
+        total: memory_info.total as f64,
+        available: memory_info.available as f64,
+        used: memory_info.used as f64,
+        free: memory_info.free as f64,
+        usage_percent: memory_info.usage_percent as f64,
+    }
+}
+
+#[napi]
+pub fn js_get_disks() -> Vec<JsDiskInfo> {
+    let disks = get_disks().unwrap();
+    disks.iter().map(|d| JsDiskInfo {
+        device: d.device.clone(),
+        mount_point: d.mount_point.clone(),
+        fs_type: d.fs_type.clone(),
+        total_bytes: d.total_bytes as f64,
+        used_bytes: d.used_bytes as f64,
+        available_bytes: d.available_bytes as f64,
+        usage_percent: d.usage_percent as f64,
+    }).collect()
+}
+
+#[napi]
+pub fn js_get_socket_summary() -> JsSocketStateSummary {
+    let socket_summary = get_socket_summary().unwrap();
+    JsSocketStateSummary {
+        total: socket_summary.total as f64,
+        established: socket_summary.established as f64,
+        listen: socket_summary.listen as f64,
+        time_wait: socket_summary.time_wait as f64,
+        close_wait: socket_summary.close_wait as f64,
     }
 }
 

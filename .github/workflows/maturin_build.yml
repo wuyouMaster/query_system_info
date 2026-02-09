@@ -26,13 +26,12 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
+            container: quay.io/pypa/manylinux2014_x86_64
           - runner: ubuntu-22.04
             target: aarch64
+            container: quay.io/pypa/manylinux2014_aarch64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
+
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -40,6 +39,8 @@ jobs:
           args: --release --out dist --manifest-path py-abi/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
+          container: ${{ matrix.platform.container }}
+      
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -53,13 +54,11 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
+            container: quay.io/pypa/musllinux_1_2_x86_64
           - runner: ubuntu-22.04
             target: aarch64
+            container: quay.io/pypa/musllinux_1_2_aarch64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -67,6 +66,8 @@ jobs:
           args: --release --out dist --manifest-path py-abi/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
+          container: ${{ matrix.platform.container }}
+    
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:

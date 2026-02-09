@@ -34,8 +34,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'yarn'
-          cache-dependency-path: js-abi/yarn.lock
 
       - name: Install
         uses: dtolnay/rust-toolchain@stable
@@ -99,8 +97,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: js-abi/yarn.lock
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -221,8 +217,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
-          cache-dependency-path: js-abi/yarn.lock
           architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
         run: yarn install
@@ -261,8 +255,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
-          cache-dependency-path: js-abi/yarn.lock
       - name: Output docker params
         id: docker
         run: |
@@ -322,8 +314,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: js-abi/yarn.lock
       - name: Install dependencies
         run: |
           yarn config set supportedArchitectures.cpu "wasm32"
@@ -361,8 +351,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: js-abi/yarn.lock
       - name: Install dependencies
         run: yarn install
       - name: create npm dirs

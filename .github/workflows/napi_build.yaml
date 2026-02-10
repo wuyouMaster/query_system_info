@@ -56,27 +56,31 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-latest
+          # macos
+          - host: macos-15-intel
             target: x86_64-apple-darwin
             build: yarn build --target x86_64-apple-darwin
-          - host: windows-latest
-            build: yarn build --target x86_64-pc-windows-msvc
-            target: x86_64-pc-windows-msvc
+          - host: macos-14
+            target: aarch64-apple-darwin
+            build: yarn build --target aarch64-apple-darwin
+          # linux
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
+          - host: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross
+          # musllinxu
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             build: yarn build --target x86_64-unknown-linux-musl -x
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            build: yarn build --target aarch64-apple-darwin
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
             build: yarn build --target aarch64-unknown-linux-musl -x
+          # windows
+          - host: windows-latest
+            build: yarn build --target x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
     name: stable - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
     defaults:
@@ -128,53 +132,6 @@ jobs:
             ${{ env.APP_NAME }}.*.node
             ${{ env.APP_NAME }}.*.wasm
           if-no-files-found: error
-  build-freebsd:
-    runs-on: ubuntu-latest
-    name: Build FreeBSD
-    steps:
-      - uses: actions/checkout@v6
-      - name: Build
-        id: build
-        uses: cross-platform-actions/action@v0.32.0
-        env:
-          DEBUG: napi:*
-          RUSTUP_IO_THREADS: 1
-        with:
-          operating_system: freebsd
-          version: '14.3'
-          memory: 8G
-          cpu_count: 3
-          environment_variables: 'DEBUG RUSTUP_IO_THREADS'
-          shell: bash
-          run: |
-            sudo pkg install -y -f curl node libnghttp2 npm cmake
-            sudo npm install -g yarn --ignore-scripts
-            curl https://sh.rustup.rs -sSf --output rustup.sh
-            sh rustup.sh -y --profile minimal --default-toolchain stable
-            source "$HOME/.cargo/env"
-            echo "~~~~ rustc --version ~~~~"
-            rustc --version
-            echo "~~~~ node -v ~~~~"
-            node -v
-            echo "~~~~ yarn --version ~~~~"
-            yarn --version
-            pwd
-            ls -lah
-            whoami
-            env
-            freebsd-version
-            cd js-abi
-            yarn install
-            yarn build
-            rm -rf node_modules
-            rm -rf target
-            rm -rf .yarn/cache
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: bindings-freebsd
-          path: ${{ env.APP_NAME }}.*.node
-          if-no-files-found: error
   test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
     needs:
@@ -183,18 +140,20 @@ jobs:
       fail-fast: false
       matrix:
         settings:
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+          - host: macos-14
+            target: aarch64-apple-darwin
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - host: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-musl
           - host: windows-latest
             target: x86_64-pc-windows-msvc
-            architecture: x64
-          - host: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            architecture: arm64
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            architecture: arm64
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            architecture: x64
         node:
           - '20'
           - '22'
@@ -208,7 +167,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
         run: yarn install
       - name: Download artifacts
@@ -329,7 +287,6 @@ jobs:
       id-token: write
     needs:
       - lint
-      - build-freebsd
       - test-macOS-windows-binding
       - test-linux-binding
       - test-wasi

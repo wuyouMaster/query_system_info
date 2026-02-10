@@ -11,7 +11,3 @@ pyo3 = "*"
 name = "py_abi"
 path = "src/lib.rs"
 crate-type = ["cdylib"]
-
-[profile.release]
-lto   = true
-strip = "symbols"

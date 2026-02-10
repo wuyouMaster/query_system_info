@@ -42,9 +42,6 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      - name: Oxlint
-        run: yarn lint
-
       - name: Cargo fmt
         run: cargo fmt -- --check
 

@@ -12,12 +12,12 @@
         "release": "napi build --release --output-dir ../dist --js index.js --dts index.d.ts"
     },
     "dependencies": {
-        "query_system_info": "file:..",
-        "napi": "^3.0.0"
+        "@napi-rs/cli": "^3.5.1",
+        "query_system_info": "file:.."
     },
     "devDependencies": {
-        "typescript": "^5.0.0",
         "ts-node": "^10.0.0",
-        "tsconfig-paths": "^4.0.0"
+        "tsconfig-paths": "^4.0.0",
+        "typescript": "^5.0.0"
     }
 }

@@ -2,7 +2,6 @@ name: napi build
 env:
   DEBUG: napi:*
   APP_NAME: js-query-system-info
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
   CARGO_INCREMENTAL: '1'
 'on':
   push:

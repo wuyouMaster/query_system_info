@@ -19,7 +19,9 @@ pub fn get_cpu_info() -> Result<CpuInfo> {
     return windows::get_cpu_info();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get CPU usage percentage (requires two samples with a delay)
@@ -30,8 +32,10 @@ pub fn get_cpu_usage(sample_duration: Duration) -> Result<Vec<f64>> {
 
     let mut usages = Vec::new();
     for i in 0..times1.len() {
-        let total1 = times1[i].user + times1[i].system + times1[i].idle + times1[i].nice + times1[i].iowait;
-        let total2 = times2[i].user + times2[i].system + times2[i].idle + times2[i].nice + times2[i].iowait;
+        let total1 =
+            times1[i].user + times1[i].system + times1[i].idle + times1[i].nice + times1[i].iowait;
+        let total2 =
+            times2[i].user + times2[i].system + times2[i].idle + times2[i].nice + times2[i].iowait;
         let total_diff = total2.saturating_sub(total1);
         let idle_diff = times2[i].idle.saturating_sub(times1[i].idle);
         let usage = ((total_diff - idle_diff) as f64 / total_diff as f64) * 100.0;
@@ -52,7 +56,9 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
     return windows::get_cpu_times();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -62,8 +68,8 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use std::fs;
     use regex::Regex;
+    use std::fs;
     use std::sync::OnceLock;
     static CPU_REGEX: OnceLock<Regex> = OnceLock::new();
 
@@ -104,7 +110,9 @@ mod linux {
         info.logical_cores = cores_seen;
 
         // Get physical core count
-        if let Ok(cores) = fs::read_to_string("/sys/devices/system/cpu/cpu0/topology/core_siblings_list") {
+        if let Ok(cores) =
+            fs::read_to_string("/sys/devices/system/cpu/cpu0/topology/core_siblings_list")
+        {
             let core_count = cores.split(',').count() + cores.matches('-').count();
             info.physical_cores = (info.logical_cores as usize / core_count.max(1)) as u32;
         } else {
@@ -121,7 +129,8 @@ mod linux {
     pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
         let stat = fs::read_to_string("/proc/stat")?;
         let mut times = Vec::new();
-        let cpu_regex = CPU_REGEX.get_or_init(|| Regex::new(r"cpu\d+").expect("Failed to create CPU regex"));
+        let cpu_regex =
+            CPU_REGEX.get_or_init(|| Regex::new(r"cpu\d+").expect("Failed to create CPU regex"));
         for line in stat.lines() {
             if cpu_regex.is_match(line) {
                 let mut time = CpuTimes::default();
@@ -254,7 +263,10 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall(format!("sysctlbyname {} failed", name)));
+                return Err(SysInfoError::SysCall(format!(
+                    "sysctlbyname {} failed",
+                    name
+                )));
             }
         }
 
@@ -275,7 +287,10 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall(format!("sysctlbyname {} failed", name)));
+                return Err(SysInfoError::SysCall(format!(
+                    "sysctlbyname {} failed",
+                    name
+                )));
             }
         }
 
@@ -296,7 +311,10 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall(format!("sysctlbyname {} failed", name)));
+                return Err(SysInfoError::SysCall(format!(
+                    "sysctlbyname {} failed",
+                    name
+                )));
             }
         }
 
@@ -311,7 +329,10 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall(format!("sysctlbyname {} failed", name)));
+                return Err(SysInfoError::SysCall(format!(
+                    "sysctlbyname {} failed",
+                    name
+                )));
             }
         }
 
@@ -332,16 +353,10 @@ mod macos {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::Win32::System::SystemInformation::{
-        GetSystemInfo, SYSTEM_INFO,
-    };
-    use windows::Win32::System::Threading::{
-        GetCurrentProcess,
-    };
-    use windows::Win32::System::ProcessStatus::{
-        GetProcessTimes,
-    };
     use std::mem;
+    use windows::Win32::System::ProcessStatus::GetProcessTimes;
+    use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+    use windows::Win32::System::Threading::GetCurrentProcess;
 
     pub fn get_cpu_info() -> Result<CpuInfo> {
         let mut info = CpuInfo::default();
@@ -354,19 +369,25 @@ mod windows {
             info.physical_cores = system_info.dwNumberOfProcessors;
 
             // Get processor name from registry
-            info.model_name = get_cpu_name_from_registry().unwrap_or_else(|_| "Unknown".to_string());
+            info.model_name =
+                get_cpu_name_from_registry().unwrap_or_else(|_| "Unknown".to_string());
         }
 
         Ok(info)
     }
 
     pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
-        use windows::Win32::System::SystemInformation::{GetSystemProcessorPerformanceInformation, SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION};
+        use windows::Win32::System::SystemInformation::{
+            GetSystemProcessorPerformanceInformation, SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION,
+        };
         let mut performance_info_count: u32 = 0;
         let mut performance_info: Vec<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> = Vec::new();
         let mut times = Vec::new();
         unsafe {
-            GetSystemProcessorPerformanceInformation(&mut performance_info, &mut performance_info_count)?;
+            GetSystemProcessorPerformanceInformation(
+                &mut performance_info,
+                &mut performance_info_count,
+            )?;
             for i in 0..performance_info_count {
                 let time = CpuTimes::default();
                 time.user = performance_info[i].UserTime.QuadPart;
@@ -411,8 +432,14 @@ mod tests {
     #[test]
     fn test_get_cpu_info() {
         let info = get_cpu_info().expect("Failed to get CPU info");
-        assert!(info.logical_cores > 0, "Should have at least 1 logical core");
-        assert!(info.physical_cores > 0, "Should have at least 1 physical core");
+        assert!(
+            info.logical_cores > 0,
+            "Should have at least 1 logical core"
+        );
+        assert!(
+            info.physical_cores > 0,
+            "Should have at least 1 physical core"
+        );
     }
 
     #[test]

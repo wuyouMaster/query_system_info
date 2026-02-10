@@ -353,7 +353,6 @@ impl SocketStateSummary {
     }
 }
 
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct XTcpInfo {

@@ -13,23 +13,14 @@ fn main() -> query_system_info::Result<()> {
     // ========================================
     println!("--- Memory Information ---");
     let mem = memory::get_memory_info()?;
-    println!(
-        "Total:     {:>12} MB",
-        mem.total / 1024 / 1024
-    );
+    println!("Total:     {:>12} MB", mem.total / 1024 / 1024);
     println!(
         "Used:      {:>12} MB ({:.1}%)",
         mem.used / 1024 / 1024,
         mem.usage_percent
     );
-    println!(
-        "Available: {:>12} MB",
-        mem.available / 1024 / 1024
-    );
-    println!(
-        "Free:      {:>12} MB",
-        mem.free / 1024 / 1024
-    );
+    println!("Available: {:>12} MB", mem.available / 1024 / 1024);
+    println!("Free:      {:>12} MB", mem.free / 1024 / 1024);
     if mem.swap_total > 0 {
         println!(
             "Swap:      {:>12} MB / {} MB",
@@ -131,7 +122,7 @@ fn main() -> query_system_info::Result<()> {
 
     // Get summary
     let summary = socket::get_socket_summary()?;
-    
+
     println!("Total connections: {}", summary.total);
     println!("  ESTABLISHED: {}", summary.established);
     println!("  LISTEN:      {}", summary.listen);
@@ -147,14 +138,25 @@ fn main() -> query_system_info::Result<()> {
 
     // Show some TCP connections
     let tcp_conns = socket::get_tcp_connections()?;
-    let listening: Vec<_> = tcp_conns.iter().filter(|(state, _)| **state == SocketState::Listen).collect();
+    let listening: Vec<_> = tcp_conns
+        .iter()
+        .filter(|(state, _)| **state == SocketState::Listen)
+        .collect();
     for (state, connections) in listening {
-        println!("state: {:?}, connections count: {:?}", state, connections.len());
+        println!(
+            "state: {:?}, connections count: {:?}",
+            state,
+            connections.len()
+        );
     }
 
     // Get established connections from the HashMap
     if let Some(established_conns) = tcp_conns.get(&SocketState::Established) {
-        println!("state: {:?}, len: {}", SocketState::Established, established_conns.len());
+        println!(
+            "state: {:?}, len: {}",
+            SocketState::Established,
+            established_conns.len()
+        );
         for item in established_conns.iter() {
             println!("item: {:?}", item);
         }

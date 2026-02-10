@@ -17,7 +17,9 @@ pub fn get_disks() -> Result<Vec<DiskInfo>> {
     return windows::get_disks();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get disk I/O statistics
@@ -32,7 +34,9 @@ pub fn get_disk_io_stats() -> Result<Vec<DiskIoStats>> {
     return windows::get_disk_io_stats();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -105,12 +109,16 @@ mod linux {
         use std::ffi::CString;
         use std::mem;
 
-        let path_cstr = CString::new(path).map_err(|_| SysInfoError::Parse("Invalid path".to_string()))?;
+        let path_cstr =
+            CString::new(path).map_err(|_| SysInfoError::Parse("Invalid path".to_string()))?;
         let mut stat: libc::statvfs = unsafe { mem::zeroed() };
 
         unsafe {
             if libc::statvfs(path_cstr.as_ptr(), &mut stat) != 0 {
-                return Err(SysInfoError::SysCall(format!("statvfs failed for {}", path)));
+                return Err(SysInfoError::SysCall(format!(
+                    "statvfs failed for {}",
+                    path
+                )));
             }
         }
 
@@ -133,9 +141,7 @@ mod linux {
 
             // Skip partitions (only show whole disks)
             // Skip ram, loop devices
-            if device.starts_with("ram")
-                || device.starts_with("loop")
-                || device.starts_with("dm-")
+            if device.starts_with("ram") || device.starts_with("loop") || device.starts_with("dm-")
             {
                 continue;
             }
@@ -314,10 +320,10 @@ mod macos {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
+    use std::mem;
     use windows::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED,
     };
-    use std::mem;
 
     pub fn get_disks() -> Result<Vec<DiskInfo>> {
         let mut disks = Vec::new();
@@ -327,7 +333,9 @@ mod windows {
         let len = unsafe { GetLogicalDriveStringsW(Some(&mut buffer)) };
 
         if len == 0 {
-            return Err(SysInfoError::WindowsApi("GetLogicalDriveStringsW failed".to_string()));
+            return Err(SysInfoError::WindowsApi(
+                "GetLogicalDriveStringsW failed".to_string(),
+            ));
         }
 
         // Parse drive strings (null-separated, double-null terminated)
@@ -336,10 +344,12 @@ mod windows {
             if buffer[i] == 0 {
                 if i > start {
                     let drive_str = String::from_utf16_lossy(&buffer[start..i]);
-                    let drive_wide: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
+                    let drive_wide: Vec<u16> =
+                        drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
                     // Check if it's a fixed drive
-                    let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(drive_wide.as_ptr())) };
+                    let drive_type =
+                        unsafe { GetDriveTypeW(windows::core::PCWSTR(drive_wide.as_ptr())) };
 
                     if drive_type == DRIVE_FIXED {
                         if let Ok(info) = get_disk_space(&drive_str, &drive_wide) {

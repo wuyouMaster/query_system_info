@@ -11,12 +11,12 @@ mod linux {
         SockDiagMessage,
     };
     use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
-    
+
     fn main() {
         let mut socket = Socket::new(NETLINK_SOCK_DIAG).unwrap();
         let _port_number = socket.bind_auto().unwrap().port_number();
         socket.connect(&SocketAddr::new(0, 0)).unwrap();
-    
+
         let mut nl_hdr = NetlinkHeader::default();
         nl_hdr.flags = NLM_F_REQUEST | NLM_F_DUMP;
         let mut packet = NetlinkMessage::new(
@@ -30,32 +30,29 @@ mod linux {
             })
             .into(),
         );
-    
+
         packet.finalize();
-    
+
         let mut buf = vec![0; packet.header.length as usize];
-    
+
         assert_eq!(buf.len(), packet.buffer_len());
-    
+
         packet.serialize(&mut buf[..]);
-    
+
         if let Err(e) = socket.send(&buf[..], 0) {
             return;
         }
-    
+
         let mut receive_buffer = vec![0; 4096];
         let mut offset = 0;
         while let Ok(size) = socket.recv(&mut &mut receive_buffer[..], 0) {
             loop {
                 let bytes = &receive_buffer[offset..];
-                let rx_packet =
-                    <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
-    
+                let rx_packet = <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
+
                 match rx_packet.payload {
                     NetlinkPayload::Noop => {}
-                    NetlinkPayload::InnerMessage(
-                        SockDiagMessage::InetResponse(response),
-                    ) => {
+                    NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
                         println!("{response:#?}");
                     }
                     NetlinkPayload::Done(_) => {
@@ -64,7 +61,7 @@ mod linux {
                     }
                     _ => return,
                 }
-    
+
                 offset += rx_packet.header.length as usize;
                 if offset == size || rx_packet.header.length == 0 {
                     offset = 0;
@@ -73,9 +70,6 @@ mod linux {
             }
         }
     }
-
 }
 
-fn main() {
-
-}
+fn main() {}

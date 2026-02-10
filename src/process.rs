@@ -17,7 +17,9 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>> {
     return windows::list_processes();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get information about a specific process
@@ -32,7 +34,9 @@ pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
     return windows::get_process_info(pid);
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -109,8 +113,12 @@ mod linux {
         //         num_threads itrealvalue starttime vsize rss ...
 
         // Find the comm field (enclosed in parentheses)
-        let start = stat.find('(').ok_or_else(|| SysInfoError::Parse("Invalid stat format".to_string()))?;
-        let end = stat.rfind(')').ok_or_else(|| SysInfoError::Parse("Invalid stat format".to_string()))?;
+        let start = stat
+            .find('(')
+            .ok_or_else(|| SysInfoError::Parse("Invalid stat format".to_string()))?;
+        let end = stat
+            .rfind(')')
+            .ok_or_else(|| SysInfoError::Parse("Invalid stat format".to_string()))?;
 
         info.name = stat[start + 1..end].to_string();
 
@@ -321,7 +329,9 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall("sysctl KERN_PROC_ALL size failed".to_string()));
+                return Err(SysInfoError::SysCall(
+                    "sysctl KERN_PROC_ALL size failed".to_string(),
+                ));
             }
         }
 
@@ -340,7 +350,9 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall("sysctl KERN_PROC_ALL failed".to_string()));
+                return Err(SysInfoError::SysCall(
+                    "sysctl KERN_PROC_ALL failed".to_string(),
+                ));
             }
         }
 
@@ -390,11 +402,11 @@ mod macos {
         };
 
         let state = match kp.kp_proc.p_stat {
-            1 => ProcessState::Idle,      // SIDL
-            2 => ProcessState::Running,   // SRUN
-            3 => ProcessState::Sleeping,  // SSLEEP
-            4 => ProcessState::Stopped,   // SSTOP
-            5 => ProcessState::Zombie,    // SZOMB
+            1 => ProcessState::Idle,     // SIDL
+            2 => ProcessState::Running,  // SRUN
+            3 => ProcessState::Sleeping, // SSLEEP
+            4 => ProcessState::Stopped,  // SSTOP
+            5 => ProcessState::Zombie,   // SZOMB
             _ => ProcessState::Unknown,
         };
 
@@ -423,6 +435,7 @@ mod macos {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
+    use std::mem;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::ProcessStatus::{
         EnumProcesses, GetModuleBaseNameW, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
@@ -430,7 +443,6 @@ mod windows {
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
-    use std::mem;
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
         let mut pids: [u32; 4096] = [0; 4096];
@@ -470,7 +482,9 @@ mod windows {
 
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
-                .map_err(|_| SysInfoError::PermissionDenied(format!("Cannot open process {}", pid)))?;
+                .map_err(|_| {
+                    SysInfoError::PermissionDenied(format!("Cannot open process {}", pid))
+                })?;
 
             // Get process name
             let mut name_buffer: [u16; 260] = [0; 260];

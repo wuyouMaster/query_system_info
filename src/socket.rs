@@ -9,8 +9,8 @@
 
 use crate::error::{Result, SysInfoError};
 use crate::types::{SocketConnection, SocketProtocol, SocketState, SocketStateSummary};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Get all TCP connections (IPv4 and IPv6)
 pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
@@ -39,7 +39,12 @@ pub fn get_all_connections() -> Result<HashMap<SocketState, Vec<SocketConnection
 /// Get socket state summary
 pub fn get_socket_summary() -> Result<SocketStateSummary> {
     let connections = get_all_connections()?;
-    Ok(SocketStateSummary::from_connections(&connections.values().flatten().collect::<Vec<&SocketConnection>>()))
+    Ok(SocketStateSummary::from_connections(
+        &connections
+            .values()
+            .flatten()
+            .collect::<Vec<&SocketConnection>>(),
+    ))
 }
 
 /// Get TCP IPv4 connections
@@ -54,7 +59,9 @@ pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnectio
     return windows::get_tcp4_connections();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get TCP IPv6 connections
@@ -69,7 +76,9 @@ pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnectio
     return windows::get_tcp6_connections();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get UDP IPv4 sockets
@@ -84,7 +93,9 @@ pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
     return windows::get_udp4_sockets();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get UDP IPv6 sockets
@@ -99,7 +110,9 @@ pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
     return windows::get_udp6_sockets();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -109,7 +122,6 @@ pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use std::fs;
     use netlink_packet_core::{
         NetlinkHeader, NetlinkMessage, NetlinkPayload, NLM_F_DUMP, NLM_F_REQUEST,
     };
@@ -119,6 +131,7 @@ mod linux {
         SockDiagMessage,
     };
     use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr as NetlinkSocketAddr};
+    use std::fs;
 
     /// TCP state mapping from kernel values to our enum
     fn tcp_state_from_kernel(state: u8) -> SocketState {
@@ -139,21 +152,21 @@ mod linux {
     }
 
     pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections( SocketProtocol::TcpV4)
+        get_inet_connections(SocketProtocol::TcpV4)
     }
 
     pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections( SocketProtocol::TcpV6)
+        get_inet_connections(SocketProtocol::TcpV6)
     }
 
     pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections( SocketProtocol::UdpV4)
+        get_inet_connections(SocketProtocol::UdpV4)
     }
-    
+
     pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_inet_connections( SocketProtocol::UdpV6)
+        get_inet_connections(SocketProtocol::UdpV6)
     }
-    
+
     fn get_inet_connections(
         proto_type: SocketProtocol,
     ) -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
@@ -211,26 +224,23 @@ mod linux {
         while let Ok(size) = socket.recv(&mut &mut receive_buffer[..], 0) {
             loop {
                 let bytes = &receive_buffer[offset..];
-                let rx_packet =
-                    <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
+                let rx_packet = <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
                 match rx_packet.payload {
                     NetlinkPayload::Noop => {}
-                    NetlinkPayload::InnerMessage(
-                        SockDiagMessage::InetResponse(response),
-                    ) => {
+                    NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
                         let state = tcp_state_from_kernel(response.header.state);
                         let local_ip = response.header.socket_id.source_address;
                         let local_port = response.header.socket_id.source_port;
                         let remote_ip = response.header.socket_id.destination_address;
                         let remote_port = response.header.socket_id.destination_port;
-                        
+
                         let local_addr = std::net::SocketAddr::new(local_ip, local_port);
                         let remote_addr = if remote_port != 0 {
                             Some(std::net::SocketAddr::new(remote_ip, remote_port))
                         } else {
                             None
                         };
-                        
+
                         let conn = SocketConnection {
                             protocol: proto_type,
                             local_addr,
@@ -325,7 +335,10 @@ mod linux {
             for i in 0..16 {
                 bytes[i] = u8::from_str_radix(&ip_hex[i * 2..i * 2 + 2], 16).ok()?;
             }
-            Some(std::net::SocketAddr::new(IpAddr::V6(Ipv6Addr::from(bytes)), port))
+            Some(std::net::SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(bytes)),
+                port,
+            ))
         } else {
             None
         }
@@ -364,9 +377,7 @@ mod macos {
         proto_type: &str,
     ) -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-        let output = Command::new("netstat")
-            .arg("-anv")
-            .output()?;
+        let output = Command::new("netstat").arg("-anv").output()?;
         let stdout = String::from_utf8(output.stdout).unwrap();
         let lines = stdout.lines();
         for line in lines {
@@ -374,12 +385,19 @@ mod macos {
                 Some(conn) => conn,
                 None => continue,
             };
-            connections.entry(conn.state).or_insert(Vec::new()).push(conn);
-        }   
+            connections
+                .entry(conn.state)
+                .or_insert(Vec::new())
+                .push(conn);
+        }
         Ok(connections)
     }
 
-    fn parse_netstat_line(line: &str, protocol: SocketProtocol, proto_type: &str) -> Option<SocketConnection> {
+    fn parse_netstat_line(
+        line: &str,
+        protocol: SocketProtocol,
+        proto_type: &str,
+    ) -> Option<SocketConnection> {
         let parts: Vec<&str> = line.split_whitespace().collect();
 
         // netstat -anv format:
@@ -500,7 +518,6 @@ mod macos {
             _ => SocketState::Unknown,
         }
     }
-
 }
 
 // ============================================================================
@@ -588,9 +605,7 @@ mod windows {
         let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
 
         for i in 0..table.dwNumEntries as usize {
-            let row = unsafe {
-                &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i))
-            };
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
 
             let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
             let local_port = u16::from_be(row.dwLocalPort as u16);
@@ -646,16 +661,16 @@ mod windows {
                 TCP_TABLE_OWNER_PID_ALL,
                 0,
             )
-            .map_err(|e| SysInfoError::WindowsApi(format!("GetExtendedTcpTable IPv6 failed: {}", e)))?;
+            .map_err(|e| {
+                SysInfoError::WindowsApi(format!("GetExtendedTcpTable IPv6 failed: {}", e))
+            })?;
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID) };
         let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
 
         for i in 0..table.dwNumEntries as usize {
-            let row = unsafe {
-                &*((table.table.as_ptr() as *const MIB_TCP6ROW_OWNER_PID).add(i))
-            };
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCP6ROW_OWNER_PID).add(i)) };
 
             let local_ip = Ipv6Addr::from(row.ucLocalAddr);
             let local_port = u16::from_be(row.dwLocalPort as u16);
@@ -669,14 +684,17 @@ mod windows {
                 None
             };
 
-            connections.entry(tcp_state_from_windows(row.dwState)).or_insert(Vec::new()).push(SocketConnection {
-                protocol: SocketProtocol::TcpV6,
-                local_addr,
-                remote_addr,
-                state: tcp_state_from_windows(row.dwState),
-                pid: Some(row.dwOwningPid),
-                inode: 0,
-            });
+            connections
+                .entry(tcp_state_from_windows(row.dwState))
+                .or_insert(Vec::new())
+                .push(SocketConnection {
+                    protocol: SocketProtocol::TcpV6,
+                    local_addr,
+                    remote_addr,
+                    state: tcp_state_from_windows(row.dwState),
+                    pid: Some(row.dwOwningPid),
+                    inode: 0,
+                });
         }
 
         Ok(connections)
@@ -718,23 +736,24 @@ mod windows {
         let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
 
         for i in 0..table.dwNumEntries as usize {
-            let row = unsafe {
-                &*((table.table.as_ptr() as *const MIB_UDPROW_OWNER_PID).add(i))
-            };
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDPROW_OWNER_PID).add(i)) };
 
             let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
             let local_port = u16::from_be(row.dwLocalPort as u16);
 
             let local_addr = SocketAddr::new(IpAddr::V4(local_ip), local_port);
 
-            connections.entry(SocketState::Unknown).or_insert(Vec::new()).push(SocketConnection {
-                protocol: SocketProtocol::UdpV4,
-                local_addr,
-                remote_addr: None, // UDP is connectionless
-                state: tcp_state_from_windows(row.dwState),
-                pid: Some(row.dwOwningPid),
-                inode: 0,
-            });
+            connections
+                .entry(SocketState::Unknown)
+                .or_insert(Vec::new())
+                .push(SocketConnection {
+                    protocol: SocketProtocol::UdpV4,
+                    local_addr,
+                    remote_addr: None, // UDP is connectionless
+                    state: tcp_state_from_windows(row.dwState),
+                    pid: Some(row.dwOwningPid),
+                    inode: 0,
+                });
         }
 
         Ok(connections)
@@ -769,30 +788,33 @@ mod windows {
                 UDP_TABLE_OWNER_PID,
                 0,
             )
-            .map_err(|e| SysInfoError::WindowsApi(format!("GetExtendedUdpTable IPv6 failed: {}", e)))?;
+            .map_err(|e| {
+                SysInfoError::WindowsApi(format!("GetExtendedUdpTable IPv6 failed: {}", e))
+            })?;
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_UDP6TABLE_OWNER_PID) };
         let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
 
         for i in 0..table.dwNumEntries as usize {
-            let row = unsafe {
-                &*((table.table.as_ptr() as *const MIB_UDP6ROW_OWNER_PID).add(i))
-            };
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDP6ROW_OWNER_PID).add(i)) };
 
             let local_ip = Ipv6Addr::from(row.ucLocalAddr);
             let local_port = u16::from_be(row.dwLocalPort as u16);
 
             let local_addr = SocketAddr::new(IpAddr::V6(local_ip), local_port);
 
-            connections.entry(tcp_state_from_windows(row.dwState)).or_insert(Vec::new()).push(SocketConnection {
-                protocol: SocketProtocol::UdpV6,
-                local_addr,
-                remote_addr: None,
-                state: tcp_state_from_windows(row.dwState),
-                pid: Some(row.dwOwningPid),
-                inode: 0,
-            });
+            connections
+                .entry(tcp_state_from_windows(row.dwState))
+                .or_insert(Vec::new())
+                .push(SocketConnection {
+                    protocol: SocketProtocol::UdpV6,
+                    local_addr,
+                    remote_addr: None,
+                    state: tcp_state_from_windows(row.dwState),
+                    pid: Some(row.dwOwningPid),
+                    inode: 0,
+                });
         }
 
         Ok(connections)
@@ -807,9 +829,16 @@ mod tests {
     fn test_get_tcp_connections() {
         let result = get_tcp_connections();
         for (state, connections) in result.as_ref().unwrap().iter() {
-            println!("state: {:?}, connections count: {:?}", state, connections.len());
+            println!(
+                "state: {:?}, connections count: {:?}",
+                state,
+                connections.len()
+            );
         }
-        assert!(result.as_ref().is_ok(), "Should be able to get TCP connections");
+        assert!(
+            result.as_ref().is_ok(),
+            "Should be able to get TCP connections"
+        );
     }
 
     #[test]

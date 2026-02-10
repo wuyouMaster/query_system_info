@@ -17,7 +17,9 @@ pub fn get_memory_info() -> Result<MemoryInfo> {
     return windows::get_memory_info();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Err(SysInfoError::NotSupported("Unsupported platform".to_string()))
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -107,9 +109,7 @@ mod macos {
         info.cached = vm_stats.purgeable_count as u64 * page_size;
 
         // Available = free + inactive + purgeable (cached)
-        info.available = info.free
-            + (vm_stats.inactive_count as u64 * page_size)
-            + info.cached;
+        info.available = info.free + (vm_stats.inactive_count as u64 * page_size) + info.cached;
 
         // Used = total - available
         info.used = info.total.saturating_sub(info.available);
@@ -142,7 +142,9 @@ mod macos {
                 0,
             ) != 0
             {
-                return Err(SysInfoError::SysCall("sysctl HW_MEMSIZE failed".to_string()));
+                return Err(SysInfoError::SysCall(
+                    "sysctl HW_MEMSIZE failed".to_string(),
+                ));
             }
         }
 
@@ -216,9 +218,7 @@ mod macos {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::Win32::System::SystemInformation::{
-        GlobalMemoryStatusEx, MEMORYSTATUSEX,
-    };
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
     pub fn get_memory_info() -> Result<MemoryInfo> {
         let mut mem_status = MEMORYSTATUSEX {
@@ -227,8 +227,9 @@ mod windows {
         };
 
         unsafe {
-            GlobalMemoryStatusEx(&mut mem_status)
-                .map_err(|e| SysInfoError::WindowsApi(format!("GlobalMemoryStatusEx failed: {}", e)))?;
+            GlobalMemoryStatusEx(&mut mem_status).map_err(|e| {
+                SysInfoError::WindowsApi(format!("GlobalMemoryStatusEx failed: {}", e))
+            })?;
         }
 
         Ok(MemoryInfo {
@@ -240,7 +241,7 @@ mod windows {
             swap_total: mem_status.ullTotalPageFile,
             swap_used: mem_status.ullTotalPageFile - mem_status.ullAvailPageFile,
             swap_free: mem_status.ullAvailPageFile,
-            cached: 0, // Not directly available on Windows
+            cached: 0,  // Not directly available on Windows
             buffers: 0, // Not applicable on Windows
         })
     }
@@ -254,7 +255,10 @@ mod tests {
     fn test_get_memory_info() {
         let info = get_memory_info().expect("Failed to get memory info");
         assert!(info.total > 0, "Total memory should be greater than 0");
-        assert!(info.used <= info.total, "Used memory should not exceed total");
+        assert!(
+            info.used <= info.total,
+            "Used memory should not exceed total"
+        );
         assert!(
             info.usage_percent >= 0.0 && info.usage_percent <= 100.0,
             "Usage percent should be between 0 and 100"

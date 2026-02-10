@@ -1,4 +1,3 @@
-
 pub fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     if offset + 4 <= data.len() {
         Some(u32::from_ne_bytes([

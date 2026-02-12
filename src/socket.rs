@@ -56,7 +56,7 @@ pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnectio
     return macos::get_tcp4_connections();
 
     #[cfg(target_os = "windows")]
-    return windows::get_tcp4_connections();
+    return innerWindows::get_tcp4_connections();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -73,7 +73,7 @@ pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnectio
     return macos::get_tcp6_connections();
 
     #[cfg(target_os = "windows")]
-    return windows::get_tcp6_connections();
+    return innerWindows::get_tcp6_connections();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -90,7 +90,7 @@ pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
     return macos::get_udp4_sockets();
 
     #[cfg(target_os = "windows")]
-    return windows::get_udp4_sockets();
+    return innerWindows::get_udp4_sockets();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -107,7 +107,7 @@ pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
     return macos::get_udp6_sockets();
 
     #[cfg(target_os = "windows")]
-    return windows::get_udp6_sockets();
+    return innerWindows::get_udp6_sockets();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -525,7 +525,7 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod innerWindows {
     use super::*;
     use std::mem;
     use std::net::{Ipv4Addr, Ipv6Addr};

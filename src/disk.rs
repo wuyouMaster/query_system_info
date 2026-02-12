@@ -14,7 +14,7 @@ pub fn get_disks() -> Result<Vec<DiskInfo>> {
     return macos::get_disks();
 
     #[cfg(target_os = "windows")]
-    return windows::get_disks();
+    return innerWindows::get_disks();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -31,7 +31,7 @@ pub fn get_disk_io_stats() -> Result<Vec<DiskIoStats>> {
     return macos::get_disk_io_stats();
 
     #[cfg(target_os = "windows")]
-    return windows::get_disk_io_stats();
+    return innerWindows::get_disk_io_stats();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -318,7 +318,7 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::Storage::FileSystem::{

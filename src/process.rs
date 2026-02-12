@@ -14,7 +14,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>> {
     return macos::list_processes();
 
     #[cfg(target_os = "windows")]
-    return windows::list_processes();
+    return innerWindows::list_processes();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -31,7 +31,7 @@ pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
     return macos::get_process_info(pid);
 
     #[cfg(target_os = "windows")]
-    return windows::get_process_info(pid);
+    return innerWindows::get_process_info(pid);
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -433,7 +433,7 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};

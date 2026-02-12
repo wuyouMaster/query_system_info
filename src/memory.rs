@@ -14,7 +14,7 @@ pub fn get_memory_info() -> Result<MemoryInfo> {
     return macos::get_memory_info();
 
     #[cfg(target_os = "windows")]
-    return windows::get_memory_info();
+    return innerWindows::get_memory_info();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -216,7 +216,7 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod innerWindows {
     use super::*;
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
@@ -263,5 +263,6 @@ mod tests {
             info.usage_percent >= 0.0 && info.usage_percent <= 100.0,
             "Usage percent should be between 0 and 100"
         );
+        println!("Memory info: {:?}", info);
     }
 }

@@ -16,7 +16,7 @@ pub fn get_cpu_info() -> Result<CpuInfo> {
     return macos::get_cpu_info();
 
     #[cfg(target_os = "windows")]
-    return windows::get_cpu_info();
+    return innerWindows::get_cpu_info();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -53,7 +53,7 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
     return macos::get_cpu_times();
 
     #[cfg(target_os = "windows")]
-    return windows::get_cpu_times();
+    return innerWindows::get_cpu_times();
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err(SysInfoError::NotSupported(
@@ -351,7 +351,7 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::System::ProcessStatus::GetProcessTimes;

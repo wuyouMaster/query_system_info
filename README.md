@@ -1,3 +1,7 @@
+<div align="right">
+  <a href="./README_EN.md">English</a> | <strong>简体中文</strong>
+</div>
+
 # query_system_info
 
 一个跨平台系统信息查询库，使用 Rust 编写，支持内存、CPU、进程、磁盘及网络套接字信息的采集，并提供 CLI 工具、Node.js 绑定和 Python 绑定。

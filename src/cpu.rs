@@ -354,48 +354,280 @@ mod macos {
 mod innerWindows {
     use super::*;
     use std::mem;
-    use windows::Win32::System::ProcessStatus::GetProcessTimes;
-    use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-    use windows::Win32::System::Threading::GetCurrentProcess;
+    use windows::Win32::System::Performance::*;
+    #[cfg(target_arch = "x86_64", target_arch = "x86")]
+    pub fn get_cpu_vendor() -> String {
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::__cpuid;
+
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::__cpuid;
+        let res = unsafe { __cpuid(0) };
+
+        // leaf 0 的 ebx/edx/ecx 拼成 12 字节厂商字符串
+        // 注意顺序是 ebx -> edx -> ecx，不是 ebx -> ecx -> edx
+        let mut raw = Vec::with_capacity(12);
+        raw.extend_from_slice(&res.ebx.to_le_bytes());
+        raw.extend_from_slice(&res.edx.to_le_bytes());
+        raw.extend_from_slice(&res.ecx.to_le_bytes());
+
+        let raw = match std::str::from_utf8(&raw) {
+            Ok(s) => s.trim_matches('\0').to_owned(),
+            Err(_) => return String::from("Unknown"),
+        };
+
+        match raw.as_str() {
+            "GenuineIntel"   => "Intel".to_string(),
+            "AuthenticAMD"   => "AMD".to_string(),
+            "HygonGenuine"   => "Hygon".to_string(),      // 海光（AMD 授权国产）
+            "GenuineTMx86"   => "Transmeta".to_string(),
+            "CyrixInstead"   => "Cyrix".to_string(),
+            "CentaurHauls"   => "VIA".to_string(),         // VIA / Centaur
+            "VIA VIA VIA "   => "VIA".to_string(),
+            "SiS SiS SiS "   => "SiS".to_string(),
+            "NexGenDriven"   => "NexGen".to_string(),
+            "UMC UMC UMC "   => "UMC".to_string(),
+            "RiseRiseRise"   => "Rise".to_string(),
+            "Geode by NSC"   => "National Semiconductor".to_string(),
+            // 虚拟机 Hypervisor
+            "KVMKVMKVM\0\0\0" => "KVM".to_string(),
+            "VMwareVMware"   => "VMware".to_string(),
+            "Microsoft Hv"   => "Hyper-V".to_string(),
+            "XenVMMXenVMM"   => "Xen".to_string(),
+            "VBoxVBoxVBox"   => "VirtualBox".to_string(),
+            "TCGTCGTCGTCG"   => "QEMU".to_string(),
+            other            => other.to_string(),          // 保底返回原始值
+        }
+    }
+
+    #[cfg(target_arch = "x86_64", target_arch = "x86")]
+    pub fn get_cpu_model_name() -> String {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::__cpuid;
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::__cpuid;
+
+        // 查询最大支持的扩展 leaf
+        let res = unsafe {__cpuid(0x80000000)};
+        if res.eax < 0x80000004 {
+            return String::new(); // CPU 太老，不支持品牌字符串
+        }
+
+        let mut out: Vec<u8> = Vec::with_capacity(48);
+        // 0x80000002, 0x80000003, 0x80000004 各给 16 字节，共 48 字节
+        for leaf in 0x80000002..=0x80000004 {
+            let res = unsafe { __cpuid(leaf) };
+            for reg in [res.eax, res.ebx, res.ecx, res.edx] {
+                out.extend_from_slice(&reg.to_le_bytes());
+            }
+        }
+
+        // 截断到第一个 null 字节
+        let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+        match std::str::from_utf8(&out[..end]) {
+            Ok(s) => s.trim().to_owned(),
+            Err(_) => String::new(),
+        }
+    }
+
+    pub fn get_cpu_cores() -> (u32, u32) {
+        let mut len = 0;
+        // First call to get required buffer size
+        unsafe {
+            GetLogicalProcessorInformation(None, &mut len);
+        }
+
+        let mut buffer = Vec::with_capacity((len as usize) / mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>() + 1);
+        
+        // Second call to get actual data
+        unsafe {
+            GetLogicalProcessorInformation(Some(buffer.as_mut_ptr()), &mut len).expect("Failed to get processor info");
+            buffer.set_len((len as usize) / mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>());
+        }
+
+        let mut phys_cores = 0;
+        let mut log_cores = 0;
+
+        for info in buffer {
+            if info.Relationship == RelationProcessorCore {
+                phys_cores += 1;
+                // Count set bits in the mask to get logical cores per physical
+                log_cores += info.ProcessorMask.count_ones() as usize;
+            }
+        }
+
+        (phys_cores as u32, log_cores as u32)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn get_cpu_model_name() -> String {
+        use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, RegCloseKey};
+        use windows::Win32::System::Registry::{HKEY, KEY_READ, REG_VALUE_TYPE};
+        unsafe {
+            let subkey = windows::core::w!(
+                "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"
+            );
+            
+            let mut hkey = HKEY::default();
+            if RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                subkey,
+                0,
+                KEY_READ,
+                &mut hkey,
+            ).is_err() {
+                return String::new();
+            }
+    
+            let value_name = windows::core::w!("ProcessorNameString");
+            let mut data_type = REG_VALUE_TYPE::default();
+            let mut buf = vec![0u8; 256];
+            let mut buf_len = buf.len() as u32;
+    
+            let result = RegQueryValueExW(
+                hkey,
+                value_name,
+                None,
+                Some(&mut data_type),
+                Some(buf.as_mut_ptr()),
+                Some(&mut buf_len),
+            );
+    
+            RegCloseKey(hkey);
+    
+            if result.is_err() {
+                return String::new();
+            }
+    
+            // buf 是 UTF-16LE，转成 Rust String
+            let words: Vec<u16> = buf[..buf_len as usize]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|&w| w != 0)
+                .collect();
+    
+            String::from_utf16_lossy(&words)
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn get_cpu_vendor() -> String {
+        use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, RegCloseKey};
+        use windows::Win32::System::Registry::{HKEY, KEY_READ, REG_VALUE_TYPE};
+        unsafe {
+            let subkey = windows::core::w!(
+                "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"
+            );
+            
+            let mut hkey = HKEY::default();
+            if RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                subkey,
+                0,
+                KEY_READ,
+                &mut hkey,
+            ).is_err() {
+                return String::new();
+            }
+        }
+        let value_name = windows::core::w!("VendorIdentifier");
+        let mut data_type = REG_VALUE_TYPE::default();
+        let mut buf = vec![0u8; 256];
+        let mut buf_len = buf.len() as u32;
+        let result = RegQueryValueExW(
+            hkey,
+            value_name,
+        );
+        RegCloseKey(hkey);
+        if result.is_err() {
+            return String::new();
+        }
+        let words: Vec<u16> = buf[..buf_len as usize]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&w| w != 0)
+            .collect();
+        String::from_utf16_lossy(&words)
+    }
 
     pub fn get_cpu_info() -> Result<CpuInfo> {
         let mut info = CpuInfo::default();
 
         unsafe {
-            let mut system_info: SYSTEM_INFO = mem::zeroed();
-            GetSystemInfo(&mut system_info);
-
-            info.logical_cores = system_info.dwNumberOfProcessors;
-            info.physical_cores = system_info.dwNumberOfProcessors;
-
-            // Get processor name from registry
-            info.model_name =
-                get_cpu_name_from_registry().unwrap_or_else(|_| "Unknown".to_string());
+            let (physical_cores, logical_cores) = get_cpu_cores();
+            info.logical_cores = logical_cores;
+            info.physical_cores = physical_cores;
+            info.model_name = get_cpu_model_name();
+            info.vendor = get_cpu_vendor();
         }
 
         Ok(info)
     }
+    
+    unsafe fn collect_counter_array(counter: PDH_HCOUNTER) -> Vec<f64> {
+        let mut buf_size = 0u32;
+        let mut item_count = 0u32;
+        let _ = PdhGetFormattedCounterArrayW(
+            counter, PDH_FMT_DOUBLE,
+            &mut buf_size, &mut item_count, None,
+        );
+        let mut items = vec![
+            PDH_FMT_COUNTERVALUE_ITEM_W::default();
+            buf_size as usize / std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>()
+        ];
+        PdhGetFormattedCounterArrayW(
+            counter, PDH_FMT_DOUBLE,
+            &mut buf_size, &mut item_count,
+            Some(items.as_mut_ptr()),
+        ).unwrap();
+        items[..item_count as usize]
+            .iter()
+            .map(|item| item.FmtValue.Anonymous.doubleValue)
+            .collect()
+    }
 
     pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
-        use windows::Win32::System::SystemInformation::{
-            GetSystemProcessorPerformanceInformation, SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION,
-        };
-        let mut performance_info_count: u32 = 0;
-        let mut performance_info: Vec<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> = Vec::new();
-        let mut times = Vec::new();
         unsafe {
-            GetSystemProcessorPerformanceInformation(
-                &mut performance_info,
-                &mut performance_info_count,
-            )?;
-            for i in 0..performance_info_count {
-                let time = CpuTimes::default();
-                time.user = performance_info[i].UserTime.QuadPart;
-                time.system = performance_info[i].KernelTime.QuadPart;
-                time.idle = performance_info[i].IdleTime.QuadPart;
-                times.push(time);
-            }
-            Ok(times)
+            let mut query = PDH_HQUERY::default();
+            PdhOpenQueryW(None, 0, &mut query).unwrap();
+    
+            // 同时注册多个计数器
+            let mut c_user     = PDH_HCOUNTER::default();
+            let mut c_system   = PDH_HCOUNTER::default();
+            let mut c_idle     = PDH_HCOUNTER::default();
+            let mut c_irq      = PDH_HCOUNTER::default();
+            let mut c_dpc      = PDH_HCOUNTER::default();
+    
+            PdhAddCounterW(query, windows::core::w!(r"\Processor(*)\% User Time"),        0, &mut c_user).unwrap();
+            PdhAddCounterW(query, windows::core::w!(r"\Processor(*)\% Privileged Time"),  0, &mut c_system).unwrap();
+            PdhAddCounterW(query, windows::core::w!(r"\Processor(*)\% Idle Time"),        0, &mut c_idle).unwrap();
+            PdhAddCounterW(query, windows::core::w!(r"\Processor(*)\% Interrupt Time"),   0, &mut c_irq).unwrap();
+            PdhAddCounterW(query, windows::core::w!(r"\Processor(*)\% DPC Time"),         0, &mut c_dpc).unwrap();
+    
+            // 两次采样
+            PdhCollectQueryData(query).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            PdhCollectQueryData(query).unwrap();
+    
+            // 读取每个计数器的数组
+            let user_vals   = collect_counter_array(c_user);
+            let system_vals = collect_counter_array(c_system);
+            let idle_vals   = collect_counter_array(c_idle);
+            let irq_vals    = collect_counter_array(c_irq);
+            let dpc_vals    = collect_counter_array(c_dpc);
+    
+            PdhCloseQuery(query).unwrap();
+    
+            // 最后一项是 _Total，跳过
+            let core_count = user_vals.len().saturating_sub(1);
+            let times = (0..core_count).map(|i| CpuTimes {
+                user:      user_vals[i],
+                system:    system_vals[i],
+                idle:      idle_vals[i],
+                interrupt: irq_vals[i],
+                dpc:       dpc_vals[i],
+            }).collect();
+
         }
     }
 
@@ -403,26 +635,6 @@ mod innerWindows {
         ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64)
     }
 
-    fn get_cpu_name_from_registry() -> Result<String> {
-        use std::process::Command;
-
-        // Use wmic to get CPU name (simpler than registry access)
-        let output = Command::new("wmic")
-            .args(["cpu", "get", "name"])
-            .output()
-            .map_err(|e| SysInfoError::SysCall(format!("Failed to run wmic: {}", e)))?;
-
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        let name = output_str
-            .lines()
-            .skip(1) // Skip header
-            .next()
-            .unwrap_or("Unknown")
-            .trim()
-            .to_string();
-
-        Ok(name)
-    }
 }
 
 #[cfg(test)]
@@ -432,6 +644,7 @@ mod tests {
     #[test]
     fn test_get_cpu_info() {
         let info = get_cpu_info().expect("Failed to get CPU info");
+        println!("CPU info: {:?}", info);
         assert!(
             info.logical_cores > 0,
             "Should have at least 1 logical core"

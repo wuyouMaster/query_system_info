@@ -436,32 +436,51 @@ mod macos {
 mod innerWindows {
     use super::*;
     use std::mem;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+    };
     use windows::Win32::System::ProcessStatus::{
         EnumProcesses, GetModuleBaseNameW, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+        CloseHandle as CloseProcessHandle, OpenProcess, ProcessTimes, PROCESS_QUERY_INFORMATION,
+        PROCESS_VM_READ,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
-        let mut pids: [u32; 4096] = [0; 4096];
+        let mut pids: Vec<u32> = vec![0; 1024];
         let mut bytes_returned: u32 = 0;
 
-        unsafe {
-            EnumProcesses(
-                pids.as_mut_ptr(),
-                (pids.len() * mem::size_of::<u32>()) as u32,
-                &mut bytes_returned,
-            )
-            .map_err(|e| SysInfoError::WindowsApi(format!("EnumProcesses failed: {}", e)))?;
+        loop {
+            unsafe {
+                let result = EnumProcesses(
+                    pids.as_mut_ptr(),
+                    (pids.len() * mem::size_of::<u32>()) as u32,
+                    &mut bytes_returned,
+                );
+
+                if result.is_err() {
+                    return Err(SysInfoError::WindowsApi(format!(
+                        "EnumProcesses failed: {}",
+                        result.unwrap_err()
+                    )));
+                }
+            }
+
+            let count = bytes_returned as usize / mem::size_of::<u32>();
+
+            if count < pids.len() {
+                pids.truncate(count);
+                break;
+            } else {
+                pids.resize(pids.len() * 2, 0);
+            }
         }
 
-        let count = bytes_returned as usize / mem::size_of::<u32>();
         let mut processes = Vec::new();
 
-        for i in 0..count {
-            let pid = pids[i];
+        for pid in pids {
             if pid == 0 {
                 continue;
             }
@@ -486,6 +505,8 @@ mod innerWindows {
                     SysInfoError::PermissionDenied(format!("Cannot open process {}", pid))
                 })?;
 
+            let _handle_guard = HandleGuard(handle);
+
             // Get process name
             let mut name_buffer: [u16; 260] = [0; 260];
             let len = GetModuleBaseNameW(handle, None, &mut name_buffer);
@@ -507,13 +528,21 @@ mod innerWindows {
                 info.memory_bytes = mem_counters.WorkingSetSize;
                 info.virtual_memory = mem_counters.PagefileUsage;
             }
-
-            CloseHandle(handle).ok();
         }
 
-        info.state = ProcessState::Running; // Simplified
+        info.state = ProcessState::Running;
 
         Ok(info)
+    }
+
+    struct HandleGuard(HANDLE);
+
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0).ok();
+            }
+        }
     }
 }
 

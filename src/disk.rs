@@ -322,13 +322,13 @@ mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::Storage::FileSystem::{
-        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED,
+        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED, DRIVE_REMOVABLE,
     };
+    use windows::Win32::System::Performance::*;
 
     pub fn get_disks() -> Result<Vec<DiskInfo>> {
         let mut disks = Vec::new();
 
-        // Get logical drive strings
         let mut buffer: [u16; 256] = [0; 256];
         let len = unsafe { GetLogicalDriveStringsW(Some(&mut buffer)) };
 
@@ -338,7 +338,6 @@ mod innerWindows {
             ));
         }
 
-        // Parse drive strings (null-separated, double-null terminated)
         let mut start = 0;
         for i in 0..len as usize {
             if buffer[i] == 0 {
@@ -347,11 +346,10 @@ mod innerWindows {
                     let drive_wide: Vec<u16> =
                         drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
-                    // Check if it's a fixed drive
                     let drive_type =
                         unsafe { GetDriveTypeW(windows::core::PCWSTR(drive_wide.as_ptr())) };
 
-                    if drive_type == DRIVE_FIXED {
+                    if drive_type == DRIVE_FIXED || drive_type == DRIVE_REMOVABLE {
                         if let Ok(info) = get_disk_space(&drive_str, &drive_wide) {
                             disks.push(info);
                         }
@@ -389,7 +387,7 @@ mod innerWindows {
         Ok(DiskInfo {
             device: drive_str.to_string(),
             mount_point: drive_str.to_string(),
-            fs_type: "NTFS".to_string(),
+            fs_type: get_filesystem_type(drive_str),
             total_bytes,
             used_bytes,
             available_bytes: free_bytes_available,
@@ -397,37 +395,188 @@ mod innerWindows {
         })
     }
 
-    pub fn get_disk_io_stats() -> Result<Vec<DiskIoStats>> {
-        // Windows disk I/O stats require performance counters or WMI
-        // This is a simplified implementation
+    fn get_filesystem_type(drive_str: &str) -> String {
+        use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
-        use std::process::Command;
+        let mut fs_type_buffer: [u16; 260] = [0; 260];
+        let drive_wide: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
-        let output = Command::new("wmic")
-            .args(["diskdrive", "get", "name,bytespersector", "/format:csv"])
-            .output()
-            .map_err(|e| SysInfoError::SysCall(format!("wmic failed: {}", e)))?;
+        unsafe {
+            let result = GetVolumeInformationW(
+                windows::core::PCWSTR(drive_wide.as_ptr()),
+                None,
+                None,
+                None,
+                None,
+                Some(&mut fs_type_buffer),
+            );
 
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        let mut stats = Vec::new();
-
-        for line in output_str.lines().skip(2) {
-            // Skip header
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 2 {
-                stats.push(DiskIoStats {
-                    device: parts.get(1).unwrap_or(&"").to_string(),
-                    reads: 0,
-                    writes: 0,
-                    bytes_read: 0,
-                    bytes_written: 0,
-                    read_time_ms: 0,
-                    write_time_ms: 0,
-                });
+            if result.is_ok() {
+                if let Some(null_pos) = fs_type_buffer.iter().position(|&c| c == 0) {
+                    return String::from_utf16_lossy(&fs_type_buffer[..null_pos]);
+                }
             }
         }
 
+        "Unknown".to_string()
+    }
+
+    pub fn get_disk_io_stats() -> Result<Vec<DiskIoStats>> {
+        unsafe {
+            let mut query = PDH_HQUERY::default();
+            PdhOpenQueryW(None, 0, &mut query)
+                .map_err(|e| SysInfoError::WindowsApi(format!("PdhOpenQueryW failed: {}", e)))?;
+
+            let mut c_read = PDH_HCOUNTER::default();
+            let mut c_write = PDH_HCOUNTER::default();
+            let mut c_read_bytes = PDH_HCOUNTER::default();
+            let mut c_write_bytes = PDH_HCOUNTER::default();
+
+            let read_path = windows::core::w!("\\PhysicalDisk(*)\\Disk Read Count");
+            let write_path = windows::core::w!("\\PhysicalDisk(*)\\Disk Write Count");
+            let read_bytes_path = windows::core::w!("\\PhysicalDisk(*)\\Disk Read Bytes");
+            let write_bytes_path = windows::core::w!("\\PhysicalDisk(*)\\Disk Write Bytes");
+
+            PdhAddCounterW(query, read_path, 0, &mut c_read)
+                .map_err(|e| SysInfoError::WindowsApi(format!("PdhAddCounterW failed: {}", e)))?;
+            PdhAddCounterW(query, write_path, 0, &mut c_write)
+                .map_err(|e| SysInfoError::WindowsApi(format!("PdhAddCounterW failed: {}", e)))?;
+            PdhAddCounterW(query, read_bytes_path, 0, &mut c_read_bytes)
+                .map_err(|e| SysInfoError::WindowsApi(format!("PdhAddCounterW failed: {}", e)))?;
+            PdhAddCounterW(query, write_bytes_path, 0, &mut c_write_bytes)
+                .map_err(|e| SysInfoError::WindowsApi(format!("PdhAddCounterW failed: {}", e)))?;
+
+            PdhCollectQueryData(query).map_err(|e| {
+                SysInfoError::WindowsApi(format!("PdhCollectQueryData failed: {}", e))
+            })?;
+
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+
+            PdhCollectQueryData(query).map_err(|e| {
+                SysInfoError::WindowsApi(format!("PdhCollectQueryData failed: {}", e))
+            })?;
+
+            let stats = collect_disk_stats(query, c_read, c_write, c_read_bytes, c_write_bytes)?;
+
+            PdhCloseQuery(query).ok();
+
+            Ok(stats)
+        }
+    }
+
+    unsafe fn collect_disk_stats(
+        query: PDH_HQUERY,
+        c_read: PDH_HCOUNTER,
+        c_write: PDH_HCOUNTER,
+        c_read_bytes: PDH_HCOUNTER,
+        c_write_bytes: PDH_HCOUNTER,
+    ) -> Result<Vec<DiskIoStats>> {
+        let mut stats = Vec::new();
+
+        let read_vals = get_counter_array(c_read)?;
+        let write_vals = get_counter_array(c_write)?;
+        let read_bytes_vals = get_counter_array(c_read_bytes)?;
+        let write_bytes_vals = get_counter_array(c_write_bytes)?;
+
+        let counter_names = get_counter_instances(query, c_read)?;
+
+        for (i, device) in counter_names.iter().enumerate() {
+            if device == "_Total" {
+                continue;
+            }
+
+            stats.push(DiskIoStats {
+                device: device.clone(),
+                reads: read_vals.get(i).copied().unwrap_or(0) as u64,
+                writes: write_vals.get(i).copied().unwrap_or(0) as u64,
+                bytes_read: read_bytes_vals.get(i).copied().unwrap_or(0) as u64,
+                bytes_written: write_bytes_vals.get(i).copied().unwrap_or(0) as u64,
+                read_time_ms: 0,
+                write_time_ms: 0,
+            });
+        }
+
         Ok(stats)
+    }
+
+    unsafe fn get_counter_array(counter: PDH_HCOUNTER) -> Result<Vec<f64>> {
+        let mut buf_size = 0u32;
+        let mut item_count = 0u32;
+
+        let _ = PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut buf_size,
+            &mut item_count,
+            None,
+        );
+
+        if buf_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut items = vec![
+            PDH_FMT_COUNTERVALUE_ITEM_W::default();
+            buf_size as usize / mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>()
+        ];
+
+        PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut buf_size,
+            &mut item_count,
+            Some(items.as_mut_ptr()),
+        )
+        .map_err(|e| {
+            SysInfoError::WindowsApi(format!("PdhGetFormattedCounterArrayW failed: {}", e))
+        })?;
+
+        let values = items[..item_count as usize]
+            .iter()
+            .filter_map(|item| {
+                if item.FmtValue.CStatus == 0 {
+                    Some(item.FmtValue.Anonymous.doubleValue)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(values)
+    }
+
+    unsafe fn get_counter_instances(
+        query: PDH_HQUERY,
+        counter: PDH_HCOUNTER,
+    ) -> Result<Vec<String>> {
+        let mut counter_path_buffer: [u16; 1024] = [0; 1024];
+        let mut counter_path_len = counter_path_buffer.len() as u32;
+
+        PdhGetCounterInfoW(
+            counter,
+            None,
+            &mut counter_path_len,
+            Some(counter_path_buffer.as_mut_ptr()),
+        )
+        .map_err(|e| SysInfoError::WindowsApi(format!("PdhGetCounterInfoW failed: {}", e)))?;
+
+        let mut path: Vec<u16> = vec![0; 1024];
+        let mut path_len = path.len() as u32;
+
+        let result = PdhGetCounterPathW(counter, &mut path, &mut path_len, 0);
+        if result.is_err() {
+            return Ok(vec![String::from("Unknown")]);
+        }
+
+        if let Some(null_pos) = path.iter().position(|&c| c == 0) {
+            let path_str = String::from_utf16_lossy(&path[..null_pos]);
+            if let Some(start) = path_str.rfind('\\') {
+                let instance = path_str[start + 1..].to_string();
+                return Ok(vec![instance]);
+            }
+        }
+
+        Ok(vec![String::from("Unknown")])
     }
 }
 

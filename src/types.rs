@@ -63,6 +63,10 @@ pub struct CpuTimes {
     pub irq: u64,
     /// Time spent servicing soft interrupts (Linux)
     pub softirq: u64,
+    /// Time spent servicing hardware interrupts (Windows)
+    pub interrupt: u64,
+    /// Time spent servicing deferred procedure calls (Windows)
+    pub dpc: u64,
 }
 
 /// Process information

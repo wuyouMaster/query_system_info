@@ -9,7 +9,7 @@
     },
     "scripts": {
         "build": "napi build --release --output-dir ../dist",
-        "release": "napi build --release --output-dir ../dist --js index.js --dts index.d.ts"
+        "release": "napi build --release --output-dir ../dist --js index.js --dts index.d.ts --platform"
     },
     "dependencies": {
         "@napi-rs/cli": "^3.5.1",

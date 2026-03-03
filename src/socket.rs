@@ -7,7 +7,7 @@
 //! - **macOS**: Uses `proc_listpidspath` and `lsof` style syscalls via libproc
 //! - **Windows**: Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from IP Helper API
 
-use crate::error::{Result, SysInfoError};
+use crate::error::Result;
 use crate::types::{SocketConnection, SocketProtocol, SocketState, SocketStateSummary};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

@@ -444,8 +444,7 @@ mod innerWindows {
         EnumProcesses, GetModuleBaseNameW, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
     use windows::Win32::System::Threading::{
-        CloseHandle as CloseProcessHandle, OpenProcess, ProcessTimes, PROCESS_QUERY_INFORMATION,
-        PROCESS_VM_READ,
+        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {

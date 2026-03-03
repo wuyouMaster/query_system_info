@@ -322,9 +322,10 @@ mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::Storage::FileSystem::{
-        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED, DRIVE_REMOVABLE,
+        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW,
     };
     use windows::Win32::System::Performance::*;
+    use windows::Win32::System::SystemInformation::{DRIVE_FIXED, DRIVE_REMOVABLE};
 
     pub fn get_disks() -> Result<Vec<DiskInfo>> {
         let mut disks = Vec::new();

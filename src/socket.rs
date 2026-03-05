@@ -568,7 +568,7 @@ mod innerWindows {
         }
     }
 
-    pub fn get_tcp4_connections() -> Result<SocketState, Vec<SocketConnection>> {
+    pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
 
         // First call to get required buffer size
@@ -584,7 +584,7 @@ mod innerWindows {
         }
 
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
@@ -597,12 +597,11 @@ mod innerWindows {
                 AF_INET.0 as u32,
                 TCP_TABLE_OWNER_PID_ALL,
                 0,
-            )
-            .map_err(|e| SysInfoError::WindowsApi(format!("GetExtendedTcpTable failed: {}", e)))?;
+            );
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
-        let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
+        let mut connections: HashMap<SocketState, Vec<SocketConnection>> = HashMap::new();
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
@@ -619,11 +618,12 @@ mod innerWindows {
                 None
             };
 
-            connections.push(SocketConnection {
+            let state = tcp_state_from_windows(row.dwState);
+            connections.entry(state).or_default().push(SocketConnection {
                 protocol: SocketProtocol::TcpV4,
                 local_addr,
                 remote_addr,
-                state: tcp_state_from_windows(row.dwState),
+                state,
                 pid: Some(row.dwOwningPid),
                 inode: 0,
             });
@@ -632,7 +632,7 @@ mod innerWindows {
         Ok(connections)
     }
 
-    pub fn get_tcp6_connections() -> Result<SocketState, Vec<SocketConnection>> {
+    pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
 
         unsafe {
@@ -647,7 +647,7 @@ mod innerWindows {
         }
 
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
@@ -660,14 +660,11 @@ mod innerWindows {
                 AF_INET6.0 as u32,
                 TCP_TABLE_OWNER_PID_ALL,
                 0,
-            )
-            .map_err(|e| {
-                SysInfoError::WindowsApi(format!("GetExtendedTcpTable IPv6 failed: {}", e))
-            })?;
+            );
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID) };
-        let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
+        let mut connections: HashMap<SocketState, Vec<SocketConnection>> = HashMap::new();
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCP6ROW_OWNER_PID).add(i)) };
@@ -684,23 +681,21 @@ mod innerWindows {
                 None
             };
 
-            connections
-                .entry(tcp_state_from_windows(row.dwState))
-                .or_insert(Vec::new())
-                .push(SocketConnection {
-                    protocol: SocketProtocol::TcpV6,
-                    local_addr,
-                    remote_addr,
-                    state: tcp_state_from_windows(row.dwState),
-                    pid: Some(row.dwOwningPid),
-                    inode: 0,
-                });
+            let state = tcp_state_from_windows(row.dwState);
+            connections.entry(state).or_default().push(SocketConnection {
+                protocol: SocketProtocol::TcpV6,
+                local_addr,
+                remote_addr,
+                state,
+                pid: Some(row.dwOwningPid),
+                inode: 0,
+            });
         }
 
         Ok(connections)
     }
 
-    pub fn get_udp4_sockets() -> Result<SocketState, Vec<SocketConnection>> {
+    pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
 
         unsafe {
@@ -715,7 +710,7 @@ mod innerWindows {
         }
 
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
@@ -728,12 +723,11 @@ mod innerWindows {
                 AF_INET.0 as u32,
                 UDP_TABLE_OWNER_PID,
                 0,
-            )
-            .map_err(|e| SysInfoError::WindowsApi(format!("GetExtendedUdpTable failed: {}", e)))?;
+            );
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_UDPTABLE_OWNER_PID) };
-        let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
+        let mut connections: HashMap<SocketState, Vec<SocketConnection>> = HashMap::new();
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDPROW_OWNER_PID).add(i)) };
@@ -745,12 +739,12 @@ mod innerWindows {
 
             connections
                 .entry(SocketState::Unknown)
-                .or_insert(Vec::new())
+                .or_default()
                 .push(SocketConnection {
                     protocol: SocketProtocol::UdpV4,
                     local_addr,
-                    remote_addr: None, // UDP is connectionless
-                    state: tcp_state_from_windows(row.dwState),
+                    remote_addr: None,
+                    state: SocketState::Unknown,
                     pid: Some(row.dwOwningPid),
                     inode: 0,
                 });
@@ -759,7 +753,7 @@ mod innerWindows {
         Ok(connections)
     }
 
-    pub fn get_udp6_sockets() -> Result<Vec<SocketConnection>> {
+    pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
 
         unsafe {
@@ -774,7 +768,7 @@ mod innerWindows {
         }
 
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
@@ -787,14 +781,11 @@ mod innerWindows {
                 AF_INET6.0 as u32,
                 UDP_TABLE_OWNER_PID,
                 0,
-            )
-            .map_err(|e| {
-                SysInfoError::WindowsApi(format!("GetExtendedUdpTable IPv6 failed: {}", e))
-            })?;
+            );
         }
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_UDP6TABLE_OWNER_PID) };
-        let mut connections = Vec::with_capacity(table.dwNumEntries as usize);
+        let mut connections: HashMap<SocketState, Vec<SocketConnection>> = HashMap::new();
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDP6ROW_OWNER_PID).add(i)) };
@@ -805,13 +796,13 @@ mod innerWindows {
             let local_addr = SocketAddr::new(IpAddr::V6(local_ip), local_port);
 
             connections
-                .entry(tcp_state_from_windows(row.dwState))
-                .or_insert(Vec::new())
+                .entry(SocketState::Unknown)
+                .or_default()
                 .push(SocketConnection {
                     protocol: SocketProtocol::UdpV6,
                     local_addr,
                     remote_addr: None,
-                    state: tcp_state_from_windows(row.dwState),
+                    state: SocketState::Unknown,
                     pid: Some(row.dwOwningPid),
                     inode: 0,
                 });

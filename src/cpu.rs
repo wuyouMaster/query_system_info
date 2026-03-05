@@ -355,6 +355,7 @@ mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::System::Performance::*;
+    use windows::Win32::System::SystemInformation::*;
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     pub fn get_cpu_vendor() -> String {
         #[cfg(target_arch = "x86_64")]
@@ -430,7 +431,7 @@ mod innerWindows {
         }
     }
 
-    pub fn get_cpu_cores() -> (u32, u32) {
+    pub unsafe fn get_cpu_cores() -> (u32, u32) {
         let mut len = 0;
         unsafe {
             let _ = GetLogicalProcessorInformation(None, &mut len);
@@ -442,7 +443,7 @@ mod innerWindows {
 
         let result = unsafe { GetLogicalProcessorInformation(Some(buffer.as_mut_ptr()), &mut len) };
 
-        if result.as_bool() == false {
+        if result.is_err() {
             return (0, 0);
         }
 
@@ -559,7 +560,7 @@ mod innerWindows {
     pub fn get_cpu_info() -> Result<CpuInfo> {
         let mut info = CpuInfo::default();
 
-        let (physical_cores, logical_cores) = get_cpu_cores();
+        let (physical_cores, logical_cores) = unsafe { get_cpu_cores() };
         info.logical_cores = logical_cores;
         info.physical_cores = physical_cores;
         info.model_name = get_cpu_model_name();
@@ -568,7 +569,7 @@ mod innerWindows {
         Ok(info)
     }
 
-    unsafe fn collect_counter_array(counter: PDH_HCOUNTER) -> Vec<f64> {
+    unsafe fn collect_counter_array(counter: isize) -> Vec<f64> {
         let mut buf_size = 0u32;
         let mut item_count = 0u32;
         let _ = PdhGetFormattedCounterArrayW(
@@ -588,8 +589,7 @@ mod innerWindows {
             &mut buf_size,
             &mut item_count,
             Some(items.as_mut_ptr()),
-        )
-        .unwrap();
+        );
         items[..item_count as usize]
             .iter()
             .map(|item| item.FmtValue.Anonymous.doubleValue)
@@ -598,54 +598,49 @@ mod innerWindows {
 
     pub fn get_cpu_times() -> Result<Vec<CpuTimes>> {
         unsafe {
-            let mut query = PDH_HQUERY::default();
-            PdhOpenQueryW(None, 0, &mut query).unwrap();
+            let mut query: isize = 0;
+            PdhOpenQueryW(None, 0, &mut query);
 
-            let mut c_user = PDH_HCOUNTER::default();
-            let mut c_system = PDH_HCOUNTER::default();
-            let mut c_idle = PDH_HCOUNTER::default();
-            let mut c_irq = PDH_HCOUNTER::default();
-            let mut c_dpc = PDH_HCOUNTER::default();
+            let mut c_user: isize = 0;
+            let mut c_system: isize = 0;
+            let mut c_idle: isize = 0;
+            let mut c_irq: isize = 0;
+            let mut c_dpc: isize = 0;
 
             PdhAddCounterW(
                 query,
                 windows::core::w!(r"\Processor(*)\% User Time"),
                 0,
                 &mut c_user,
-            )
-            .unwrap();
+            );
             PdhAddCounterW(
                 query,
                 windows::core::w!(r"\Processor(*)\% Privileged Time"),
                 0,
                 &mut c_system,
-            )
-            .unwrap();
+            );
             PdhAddCounterW(
                 query,
                 windows::core::w!(r"\Processor(*)\% Idle Time"),
                 0,
                 &mut c_idle,
-            )
-            .unwrap();
+            );
             PdhAddCounterW(
                 query,
                 windows::core::w!(r"\Processor(*)\% Interrupt Time"),
                 0,
                 &mut c_irq,
-            )
-            .unwrap();
+            );
             PdhAddCounterW(
                 query,
                 windows::core::w!(r"\Processor(*)\% DPC Time"),
                 0,
                 &mut c_dpc,
-            )
-            .unwrap();
+            );
 
-            PdhCollectQueryData(query).unwrap();
+            PdhCollectQueryData(query);
             std::thread::sleep(std::time::Duration::from_millis(1000));
-            PdhCollectQueryData(query).unwrap();
+            PdhCollectQueryData(query);
 
             let user_vals = collect_counter_array(c_user);
             let system_vals = collect_counter_array(c_system);
@@ -653,7 +648,7 @@ mod innerWindows {
             let irq_vals = collect_counter_array(c_irq);
             let dpc_vals = collect_counter_array(c_dpc);
 
-            PdhCloseQuery(query).unwrap();
+            PdhCloseQuery(query);
 
             let core_count = user_vals.len().saturating_sub(1);
             let times = (0..core_count)

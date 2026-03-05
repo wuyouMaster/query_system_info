@@ -524,8 +524,8 @@ mod innerWindows {
             )
             .is_ok()
             {
-                info.memory_bytes = mem_counters.WorkingSetSize;
-                info.virtual_memory = mem_counters.PagefileUsage;
+                info.memory_bytes = mem_counters.WorkingSetSize as u64;
+                info.virtual_memory = mem_counters.PagefileUsage as u64;
             }
         }
 

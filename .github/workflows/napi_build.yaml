@@ -124,7 +124,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: ${{ github.workspace }}/dist/*.node
+          path: ${{ github.workspace }}/dist/
           if-no-files-found: error
   test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -167,7 +167,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: .
+          path: ../dist
       - name: List packages
         run: ls -R .
         shell: bash
@@ -226,7 +226,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
-          path: .
+          path: ../dist
       - name: List packages
         run: ls -R .
         shell: bash
@@ -265,7 +265,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-wasm32-wasip1-threads
-          path: .
+          path: ../dist
       - name: List packages
         run: ls -R .
         shell: bash

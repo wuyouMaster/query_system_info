@@ -8,9 +8,9 @@
         "version": "0.1.0"
     },
     "scripts": {
-        "build": "napi build --release --output-dir ../dist",
+        "build": "napi build --release --output-dir ../dist --platform",
         "release": "napi build --release --output-dir ../dist --js index.js --dts index.d.ts --platform",
-        "test": "node -e \"const { get_cpu_info } = require('../dist/index.js'); const info = get_cpu_info(); console.log('CPU Info:', info); console.log('Tests passed!');\""
+        "test": "node -e \"const { jsGetCpuInfo } = require('../dist/index.js'); const info = jsGetCpuInfo(); console.log('CPU Info:', info); console.log('Tests passed!');\""
     },
     "dependencies": {
         "@napi-rs/cli": "^3.5.1",

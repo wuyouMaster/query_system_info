@@ -167,7 +167,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: ../dist
+          path: dist
       - name: List packages
         run: ls -R .
         shell: bash
@@ -226,7 +226,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
-          path: ../dist
+          path: dist
       - name: List packages
         run: ls -R .
         shell: bash
@@ -265,7 +265,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: bindings-wasm32-wasip1-threads
-          path: ../dist
+          path: dist
       - name: List packages
         run: ls -R .
         shell: bash

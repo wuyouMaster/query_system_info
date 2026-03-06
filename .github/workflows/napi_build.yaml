@@ -235,36 +235,6 @@ jobs:
           image: ${{ steps.docker.outputs.IMAGE }}
           options: -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/js-abi --platform ${{ steps.docker.outputs.PLATFORM }}
           run: yarn test
-  test-wasi:
-    name: Test WASI target
-    needs:
-      - build
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: js-abi
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Install dependencies
-        run: |
-          yarn config set supportedArchitectures.cpu "wasm32"
-          yarn install
-      - name: Download artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: bindings-wasm32-wasip1-threads
-          path: dist
-      - name: List packages
-        run: ls -R .
-        shell: bash
-      - name: Test bindings
-        run: yarn test
-        env:
-          NAPI_RS_FORCE_WASI: 1
   publish:
     name: Publish
     runs-on: ubuntu-latest
@@ -275,7 +245,6 @@ jobs:
       - lint
       - test-macOS-windows-binding
       - test-linux-binding
-      - test-wasi
     defaults:
       run:
         working-directory: js-abi

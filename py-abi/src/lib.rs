@@ -136,7 +136,7 @@ impl PySystemSummary {
         let socket_summary = get_socket_summary().unwrap();
         let connections = get_all_connections().unwrap();
         let processes = list_processes().unwrap();
-        let cpu_usage = get_cpu_usage(Duration::from_secs(sample_duration.unwrap_or(1))).unwrap();
+        let cpu_usage = get_cpu_usage(Duration::from_millis(sample_duration.unwrap_or(500))).unwrap();
 
         Self {
             memory: PyMemoryInfo {
@@ -274,7 +274,7 @@ pub fn get_system_summary(sample_duration: Option<u64>) -> PySystemSummary {
 
 #[pyfunction]
 pub fn py_get_cpu_usage(sample_duration: Option<u64>) -> Vec<f64> {
-    get_cpu_usage(Duration::from_secs(sample_duration.unwrap_or(1))).unwrap()
+    get_cpu_usage(Duration::from_millis(sample_duration.unwrap_or(500))).unwrap()
 }
 #[pyfunction]
 pub fn py_get_cpu_info() -> PyCpuInfo {

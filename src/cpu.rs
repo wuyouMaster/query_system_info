@@ -700,4 +700,11 @@ mod tests {
         );
         println!("CPU times: {:?}", times);
     }
+
+    #[test]
+    fn test_get_cpu_usage() {
+        let usage = get_cpu_usage(Duration::from_millis(500)).expect("Failed to get CPU usage");
+        println!("CPU usage: {:?}", usage);
+        assert!(usage.len() > 0, "CPU usage should have some data");
+    }
 }

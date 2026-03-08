@@ -96,8 +96,8 @@ impl JsSystemSummary {
         let connections = get_all_connections().unwrap();
         let processes = list_processes().unwrap();
         let process_count = processes.len();
-        let use_duration = duration.unwrap_or(1 as f64);
-        let cpu_usage = get_cpu_usage(Duration::from_secs(use_duration as u64)).unwrap();
+        let use_duration = duration.unwrap_or(500.0 as f64);
+        let cpu_usage = get_cpu_usage(Duration::from_millis(use_duration as u64)).unwrap();
         Self {
             memory: JsMemoryInfo {
                 total: memory.total as f64,
@@ -250,7 +250,7 @@ impl JsSystemSummary {
 
 #[napi]
 pub fn js_get_cpu_usage(duration: Option<f64>) -> Vec<f64> {
-    get_cpu_usage(Duration::from_secs(duration.unwrap_or(1.0) as u64)).unwrap()
+    get_cpu_usage(Duration::from_millis(duration.unwrap_or(500.0) as u64)).unwrap()
 }
 
 #[napi]

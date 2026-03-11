@@ -610,15 +610,14 @@ mod macos {
 mod innerWindows {
     use super::*;
     use std::mem;
-    use windows::Win32::Foundation::FILETIME;
-    use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE,
-    };
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::ProcessStatus::{
-        EnumProcesses, GetModuleBaseNameW, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        EnumProcesses, GetModuleBaseNameW, GetModuleFileNameExW, GetProcessMemoryInfo,
+        PROCESS_MEMORY_COUNTERS,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
@@ -685,6 +684,22 @@ mod innerWindows {
             let len = GetModuleBaseNameW(handle, None, &mut name_buffer);
             if len > 0 {
                 info.name = String::from_utf16_lossy(&name_buffer[..len as usize]);
+            }
+
+            // Get exe path
+            let mut path_buffer: [u16; 260] = [0; 260];
+            let mut path_len = path_buffer.len() as u32;
+            if QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                &mut path_buffer,
+                &mut path_len,
+            )
+            .is_ok()
+                && path_len > 0
+            {
+                info.exe_path = String::from_utf16_lossy(&path_buffer[..path_len as usize]);
+                info.cmdline = vec![info.exe_path.clone()];
             }
 
             // Get memory info

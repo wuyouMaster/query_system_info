@@ -1,13 +1,14 @@
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi_derive::napi;
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::list_processes;
+use query_system_info::process::{list_processes, ProcessTracker};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use napi_derive::napi;
 
 #[napi(object)]
 #[derive(Clone)]
@@ -70,6 +71,22 @@ pub struct JsSocketConnection {
     pub state: String,
     pub pid: f64,
     pub inode: f64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsChildProcessEvent {
+    pub pid: f64,
+    pub ppid: f64,
+    pub name: String,
+    pub cmdline: Vec<String>,
+    pub exe_path: String,
+    pub start_time: f64,
+}
+
+#[napi]
+pub struct JsProcessTracker {
+    tracker: Arc<Mutex<Option<ProcessTracker>>>,
 }
 
 #[napi]
@@ -543,6 +560,41 @@ pub fn get_connection_by_state(state: String) -> Vec<JsSocketConnection> {
             inode: c.inode as f64,
         })
         .collect()
+}
+
+#[napi]
+impl JsProcessTracker {
+    #[napi]
+    pub fn stop(&self) {
+        if let Ok(mut tracker) = self.tracker.lock() {
+            if let Some(t) = tracker.take() {
+                t.stop();
+            }
+        }
+    }
+}
+
+#[napi]
+pub fn start_tracking_children(
+    pid: f64,
+    callback: ThreadsafeFunction<JsChildProcessEvent>,
+) -> JsProcessTracker {
+    let tracker = query_system_info::process::start_tracking_children(pid as u32, move |event| {
+        let js_event = JsChildProcessEvent {
+            pid: event.pid as f64,
+            ppid: event.ppid as f64,
+            name: event.name,
+            cmdline: event.cmdline,
+            exe_path: event.exe_path,
+            start_time: event.start_time as f64,
+        };
+        callback.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
+    })
+    .unwrap();
+
+    JsProcessTracker {
+        tracker: Arc::new(Mutex::new(Some(tracker))),
+    }
 }
 
 #[cfg(test)]

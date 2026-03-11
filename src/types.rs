@@ -421,3 +421,20 @@ pub struct XinpGen {
     xig_gen: u64,
     xig_sogen: u64,
 }
+
+/// Child process event information
+#[derive(Debug, Clone)]
+pub struct ChildProcessEvent {
+    /// Child process ID
+    pub pid: u32,
+    /// Parent process ID
+    pub ppid: u32,
+    /// Process name
+    pub name: String,
+    /// Command line arguments
+    pub cmdline: Vec<String>,
+    /// Executable path
+    pub exe_path: String,
+    /// Start time (unix timestamp)
+    pub start_time: u64,
+}

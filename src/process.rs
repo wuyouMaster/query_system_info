@@ -3,7 +3,11 @@
 //! Provides cross-platform process information gathering.
 
 use crate::error::{Result, SysInfoError};
-use crate::types::{ProcessInfo, ProcessState};
+use crate::types::{ChildProcessEvent, ProcessInfo, ProcessState};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 /// List all processes
 pub fn list_processes() -> Result<Vec<ProcessInfo>> {
@@ -20,6 +24,103 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>> {
     Err(SysInfoError::NotSupported(
         "Unsupported platform".to_string(),
     ))
+}
+
+/// Process tracker handle
+pub struct ProcessTracker {
+    handle: Arc<Mutex<TrackerState>>,
+}
+
+struct TrackerState {
+    root_pid: u32,
+    running: bool,
+    known_pids: HashSet<u32>,
+    callback: Box<dyn Fn(ChildProcessEvent) + Send + 'static>,
+}
+
+/// Start tracking child processes of a given PID
+pub fn start_tracking_children<F>(pid: u32, callback: F) -> Result<ProcessTracker>
+where
+    F: Fn(ChildProcessEvent) + Send + 'static,
+{
+    let state = Arc::new(Mutex::new(TrackerState {
+        root_pid: pid,
+        running: true,
+        known_pids: HashSet::new(),
+        callback: Box::new(callback),
+    }));
+
+    let state_clone = Arc::clone(&state);
+    thread::spawn(move || {
+        track_loop(state_clone);
+    });
+
+    Ok(ProcessTracker { handle: state })
+}
+
+impl ProcessTracker {
+    /// Stop tracking child processes
+    pub fn stop(&self) {
+        if let Ok(mut state) = self.handle.lock() {
+            state.running = false;
+        }
+    }
+}
+
+fn track_loop(state: Arc<Mutex<TrackerState>>) {
+    loop {
+        let (root_pid, running) = {
+            let s = state.lock().unwrap();
+            (s.root_pid, s.running)
+        };
+
+        if !running {
+            break;
+        }
+
+        if let Ok(children) = find_all_children(root_pid) {
+            let mut state_lock = state.lock().unwrap();
+            for child in children {
+                if !state_lock.known_pids.contains(&child.pid) {
+                    state_lock.known_pids.insert(child.pid);
+                    (state_lock.callback)(child);
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn find_all_children(root_pid: u32) -> Result<Vec<ChildProcessEvent>> {
+    let mut result = Vec::new();
+    let mut to_check = vec![root_pid];
+    let mut checked = HashSet::new();
+
+    while let Some(pid) = to_check.pop() {
+        if checked.contains(&pid) {
+            continue;
+        }
+        checked.insert(pid);
+
+        if let Ok(processes) = list_processes() {
+            for proc in processes {
+                if proc.ppid == pid && proc.pid != root_pid {
+                    result.push(ChildProcessEvent {
+                        pid: proc.pid,
+                        ppid: proc.ppid,
+                        name: proc.name.clone(),
+                        cmdline: proc.cmdline.clone(),
+                        exe_path: proc.exe_path.clone(),
+                        start_time: proc.start_time,
+                    });
+                    to_check.push(proc.pid);
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Get information about a specific process
@@ -560,5 +661,22 @@ mod tests {
         let pid = std::process::id();
         let info = get_process_info(pid).expect("Failed to get current process info");
         assert_eq!(info.pid, pid);
+    }
+
+    #[test]
+    fn test_tracking_api() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = Arc::clone(&called);
+
+        let tracker = start_tracking_children(std::process::id(), move |_event| {
+            called_clone.store(true, Ordering::SeqCst);
+        })
+        .expect("Failed to start tracking");
+
+        thread::sleep(Duration::from_millis(100));
+        tracker.stop();
     }
 }

@@ -330,6 +330,14 @@ for p in sorted.iter().take(10) {
 let pid = std::process::id();
 let info = process::get_process_info(pid)?;
 println!("当前进程：{} ({})", info.name, info.exe_path);
+
+// 追踪子进程
+let tracker = process::start_tracking_children(1234, |child| {
+    println!("新子进程: PID={}, 名称={}, 命令={}", 
+        child.pid, child.name, child.cmdline.join(" "));
+})?;
+// 停止追踪
+tracker.stop();
 ```
 
 #### 磁盘信息
@@ -519,6 +527,13 @@ const memInfo = sysinfo.jsGetMemoryInfo();
 const cpuInfo = sysinfo.jsGetCpuInfo();
 const allConns = sysinfo.getConnections();
 const allProcs = sysinfo.getProcesses();
+
+// ---- 子进程追踪 ----
+const tracker = sysinfo.startTrackingChildren(1234, (child) => {
+    console.log(`新子进程: PID=${child.pid}, 名称=${child.name}`);
+});
+// 停止追踪
+tracker.stop();
 ```
 
 ---
@@ -588,6 +603,14 @@ conn = sysinfo.get_connection_by_inode(12345)
 processes = sysinfo.get_processes()
 proc = sysinfo.get_process_by_pid(1)
 print(sysinfo.get_process_count())
+
+# ---- 子进程追踪 ----
+def on_child(child):
+    print(f"新子进程: PID={child['pid']}, 名称={child['name']}")
+
+tracker = sysinfo.start_tracking_children(1234, on_child)
+# 停止追踪
+tracker.stop()
 ```
 
 ---
@@ -650,6 +673,7 @@ make all
 |------|----------|------|
 | `list_processes()` | `Result<Vec<ProcessInfo>>` | 列举所有进程 |
 | `get_process_info(pid)` | `Result<ProcessInfo>` | 获取指定 PID 进程信息 |
+| `start_tracking_children(pid, callback)` | `Result<ProcessTracker>` | 持续追踪指定进程的所有子进程 |
 
 #### `disk` 模块
 

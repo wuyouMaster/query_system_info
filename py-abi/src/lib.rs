@@ -1,12 +1,14 @@
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::list_processes;
+use query_system_info::process::{list_processes, ProcessTracker};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[pyclass(skip_from_py_object)]
@@ -105,6 +107,22 @@ pub struct PySocketConnection {
     pub inode: u64,
 }
 
+#[pyclass]
+pub struct PyProcessTracker {
+    tracker: Arc<Mutex<Option<ProcessTracker>>>,
+}
+
+#[pymethods]
+impl PyProcessTracker {
+    pub fn stop(&self) {
+        if let Ok(mut tracker) = self.tracker.lock() {
+            if let Some(t) = tracker.take() {
+                t.stop();
+            }
+        }
+    }
+}
+
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySystemSummary {
@@ -136,7 +154,8 @@ impl PySystemSummary {
         let socket_summary = get_socket_summary().unwrap();
         let connections = get_all_connections().unwrap();
         let processes = list_processes().unwrap();
-        let cpu_usage = get_cpu_usage(Duration::from_millis(sample_duration.unwrap_or(500))).unwrap();
+        let cpu_usage =
+            get_cpu_usage(Duration::from_millis(sample_duration.unwrap_or(500))).unwrap();
 
         Self {
             memory: PyMemoryInfo {
@@ -534,6 +553,27 @@ pub fn get_connection_by_state(state: String) -> Vec<PySocketConnection> {
         .collect()
 }
 
+#[pyfunction]
+pub fn start_tracking_children(pid: u32, callback: Py<PyAny>) -> PyResult<PyProcessTracker> {
+    let tracker = query_system_info::process::start_tracking_children(pid, move |event| {
+        if let Some(_py) = pyo3::Python::try_attach(|py| {
+            let dict = PyDict::new(py);
+            let _ = dict.set_item("pid", event.pid);
+            let _ = dict.set_item("ppid", event.ppid);
+            let _ = dict.set_item("name", &event.name);
+            let _ = dict.set_item("cmdline", &event.cmdline);
+            let _ = dict.set_item("exe_path", &event.exe_path);
+            let _ = dict.set_item("start_time", event.start_time);
+            let _ = callback.call1(py, (dict,));
+        }) {}
+    })
+    .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))?;
+
+    Ok(PyProcessTracker {
+        tracker: Arc::new(Mutex::new(Some(tracker))),
+    })
+}
+
 #[pymodule]
 pub fn py_query_system_info(m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySystemSummary>()?;
@@ -543,6 +583,7 @@ pub fn py_query_system_info(m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySocketStateSummary>()?;
     m.add_class::<PySocketConnection>()?;
     m.add_class::<PyProcessInfo>()?;
+    m.add_class::<PyProcessTracker>()?;
     m.add_function(wrap_pyfunction!(get_connections, m.py())?)?;
     m.add_function(wrap_pyfunction!(get_processes, m.py())?)?;
     m.add_function(wrap_pyfunction!(get_process_count, m.py())?)?;
@@ -552,6 +593,7 @@ pub fn py_query_system_info(m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_connection_by_local_addr, m.py())?)?;
     m.add_function(wrap_pyfunction!(get_connection_by_remote_addr, m.py())?)?;
     m.add_function(wrap_pyfunction!(get_connection_by_state, m.py())?)?;
+    m.add_function(wrap_pyfunction!(start_tracking_children, m.py())?)?;
     Ok(())
 }
 

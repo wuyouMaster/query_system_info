@@ -330,6 +330,14 @@ for p in sorted.iter().take(10) {
 let pid = std::process::id();
 let info = process::get_process_info(pid)?;
 println!("Current process: {} ({})", info.name, info.exe_path);
+
+// Track child processes
+let tracker = process::start_tracking_children(1234, |child| {
+    println!("New child: PID={}, name={}, cmd={}", 
+        child.pid, child.name, child.cmdline.join(" "));
+})?;
+// Stop tracking
+tracker.stop();
 ```
 
 #### Disk Information
@@ -518,6 +526,13 @@ const memInfo  = sysinfo.jsGetMemoryInfo();
 const cpuInfo  = sysinfo.jsGetCpuInfo();
 const allConns = sysinfo.getConnections();
 const allProcs = sysinfo.getProcesses();
+
+// ---- Child process tracking ----
+const tracker = sysinfo.startTrackingChildren(1234, (child) => {
+    console.log(`New child: PID=${child.pid}, name=${child.name}`);
+});
+// Stop tracking
+tracker.stop();
 ```
 
 ---
@@ -588,6 +603,14 @@ conn = sysinfo.get_connection_by_inode(12345)
 processes = sysinfo.get_processes()
 proc      = sysinfo.get_process_by_pid(1)
 count     = sysinfo.get_process_count()
+
+# ---- Child process tracking ----
+def on_child(child):
+    print(f"New child: PID={child['pid']}, name={child['name']}")
+
+tracker = sysinfo.start_tracking_children(1234, on_child)
+# Stop tracking
+tracker.stop()
 ```
 
 ---
@@ -650,6 +673,7 @@ Supported platforms and their Rust targets:
 |----------|-------------|-------------|
 | `list_processes()` | `Result<Vec<ProcessInfo>>` | List all running processes |
 | `get_process_info(pid)` | `Result<ProcessInfo>` | Get info for a specific PID |
+| `start_tracking_children(pid, callback)` | `Result<ProcessTracker>` | Track all child processes of a given PID |
 
 #### `disk` module
 

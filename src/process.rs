@@ -304,7 +304,9 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use libc::{c_int, c_void, sysctl, CTL_KERN, KERN_PROC, KERN_PROC_ALL, KERN_PROC_PID};
+    use libc::{
+        c_int, c_void, sysctl, CTL_KERN, KERN_PROC, KERN_PROCARGS2, KERN_PROC_ALL, KERN_PROC_PID,
+    };
     use std::mem;
     use std::ptr;
 
@@ -511,20 +513,91 @@ mod macos {
             _ => ProcessState::Unknown,
         };
 
+        let pid = kp.kp_proc.p_pid as u32;
+        let (exe_path, cmdline) = get_process_args(pid);
+
         ProcessInfo {
-            pid: kp.kp_proc.p_pid as u32,
+            pid,
             ppid: kp.kp_eproc.e_ppid as u32,
             name,
-            exe_path: String::new(), // Would need proc_pidpath
-            cmdline: Vec::new(),     // Would need proc_pidinfo
+            exe_path,
+            cmdline,
             state,
-            memory_bytes: 0, // Would need task_info
+            memory_bytes: 0,
             virtual_memory: 0,
             cpu_percent: 0.0,
             threads: 0,
             start_time: kp.kp_proc.p_starttime.tv_sec as u64,
             uid: kp.kp_eproc.e_ucred.cr_uid,
             username: String::new(),
+        }
+    }
+
+    fn get_process_args(pid: u32) -> (String, Vec<String>) {
+        let mut mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
+        let mut size: usize = 0;
+
+        unsafe {
+            if sysctl(
+                mib.as_mut_ptr(),
+                3,
+                ptr::null_mut(),
+                &mut size,
+                ptr::null_mut(),
+                0,
+            ) != 0
+            {
+                return (String::new(), Vec::new());
+            }
+
+            let mut buf = vec![0u8; size];
+            if sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr() as *mut c_void,
+                &mut size,
+                ptr::null_mut(),
+                0,
+            ) != 0
+            {
+                return (String::new(), Vec::new());
+            }
+
+            if size < 4 {
+                return (String::new(), Vec::new());
+            }
+
+            let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            let mut pos = 4;
+
+            // Skip executable path
+            while pos < buf.len() && buf[pos] != 0 {
+                pos += 1;
+            }
+            // Skip trailing nulls
+            while pos < buf.len() && buf[pos] == 0 {
+                pos += 1;
+            }
+
+            let mut args = Vec::new();
+            for _ in 0..argc {
+                if pos >= buf.len() {
+                    break;
+                }
+                let start = pos;
+                while pos < buf.len() && buf[pos] != 0 {
+                    pos += 1;
+                }
+                if pos > start {
+                    if let Ok(arg) = String::from_utf8(buf[start..pos].to_vec()) {
+                        args.push(arg);
+                    }
+                }
+                pos += 1;
+            }
+
+            let exe = args.first().cloned().unwrap_or_default();
+            (exe, args)
         }
     }
 }

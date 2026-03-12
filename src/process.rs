@@ -611,13 +611,17 @@ mod innerWindows {
     use super::*;
     use std::mem;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::core::PWSTR;
     use windows::Win32::System::ProcessStatus::{
         EnumProcesses, GetModuleBaseNameW, GetModuleFileNameExW, GetProcessMemoryInfo,
         PROCESS_MEMORY_COUNTERS,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+    use windows::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessBasicInformation,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
@@ -679,6 +683,18 @@ mod innerWindows {
 
             let _handle_guard = HandleGuard(handle);
 
+            // Get PPID via NtQueryInformationProcess
+            let mut pbi: PROCESS_BASIC_INFORMATION = mem::zeroed();
+            let mut return_length: u32 = 0;
+            let _ = NtQueryInformationProcess(
+                handle,
+                ProcessBasicInformation,
+                &mut pbi as *mut _ as *mut _,
+                mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
+                &mut return_length,
+            );
+            info.ppid = pbi.InheritedFromUniqueProcessId as u32;
+
             // Get process name
             let mut name_buffer: [u16; 260] = [0; 260];
             let len = GetModuleBaseNameW(handle, None, &mut name_buffer);
@@ -692,7 +708,7 @@ mod innerWindows {
             if QueryFullProcessImageNameW(
                 handle,
                 PROCESS_NAME_WIN32,
-                &mut path_buffer,
+                PWSTR(path_buffer.as_mut_ptr()),
                 &mut path_len,
             )
             .is_ok()

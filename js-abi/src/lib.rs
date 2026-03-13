@@ -102,20 +102,37 @@ pub struct JsSystemSummary {
     cpu_usage: Vec<f64>,
 }
 
+fn into_napi_result<T, E>(result: std::result::Result<T, E>, context: &str) -> napi::Result<T>
+where
+    E: std::fmt::Display,
+{
+    result.map_err(|error| napi::Error::from_reason(format!("{context}: {error}")))
+}
+
+fn to_js_process_info(process: &query_system_info::types::ProcessInfo) -> JsProcessInfo {
+    JsProcessInfo {
+        pid: process.pid as f64,
+        name: process.name.clone(),
+        command: process.cmdline.join(" "),
+        status: process.state.to_string(),
+        memory_usage: process.memory_bytes as f64,
+    }
+}
+
 #[napi]
 impl JsSystemSummary {
     #[napi(constructor)]
-    pub fn new(duration: Option<f64>) -> Self {
+    pub fn new(duration: Option<f64>) -> napi::Result<Self> {
         let memory = get_memory_info().unwrap();
         let cpu = get_cpu_info().unwrap();
         let disks = get_disks().unwrap();
         let socket_summary = get_socket_summary().unwrap();
         let connections = get_all_connections().unwrap();
-        let processes = list_processes().unwrap();
+        let processes = into_napi_result(list_processes(), "list_processes failed")?;
         let process_count = processes.len();
         let use_duration = duration.unwrap_or(500.0 as f64);
         let cpu_usage = get_cpu_usage(Duration::from_millis(use_duration as u64)).unwrap();
-        Self {
+        Ok(Self {
             memory: JsMemoryInfo {
                 total: memory.total as f64,
                 available: memory.available as f64,
@@ -164,19 +181,10 @@ impl JsSystemSummary {
                     inode: c.inode as f64,
                 })
                 .collect(),
-            processes: processes
-                .iter()
-                .map(|p| JsProcessInfo {
-                    pid: p.pid as f64,
-                    name: p.name.clone(),
-                    command: p.cmdline.join(" "),
-                    status: p.state.to_string(),
-                    memory_usage: p.memory_bytes as f64,
-                })
-                .collect(),
+            processes: processes.iter().map(to_js_process_info).collect(),
             process_count: process_count as f64,
             cpu_usage: cpu_usage,
-        }
+        })
     }
 
     #[napi]
@@ -344,37 +352,22 @@ pub fn get_connections() -> Vec<JsSocketConnection> {
 }
 
 #[napi]
-pub fn get_processes() -> Vec<JsProcessInfo> {
-    let processes = list_processes().unwrap();
-    processes
-        .iter()
-        .map(|p| JsProcessInfo {
-            pid: p.pid as f64,
-            name: p.name.clone(),
-            command: p.cmdline.join(" "),
-            status: p.state.to_string(),
-            memory_usage: p.memory_bytes as f64,
-        })
-        .collect()
+pub fn get_processes() -> napi::Result<Vec<JsProcessInfo>> {
+    let processes = into_napi_result(list_processes(), "list_processes failed")?;
+    Ok(processes.iter().map(to_js_process_info).collect())
 }
 
 #[napi]
-pub fn get_process_count() -> f64 {
-    let processes = list_processes().unwrap();
-    processes.len() as f64
+pub fn get_process_count() -> napi::Result<f64> {
+    let processes = into_napi_result(list_processes(), "list_processes failed")?;
+    Ok(processes.len() as f64)
 }
 
 #[napi]
 pub fn get_process_by_pid(pid: f64) -> Option<JsProcessInfo> {
     let processes = list_processes().ok()?;
     let result = processes.iter().find(|p| p.pid == pid as u32)?.clone();
-    Some(JsProcessInfo {
-        pid: result.pid as f64,
-        name: result.name.clone(),
-        command: result.cmdline.join(" "),
-        status: result.state.to_string(),
-        memory_usage: result.memory_bytes as f64,
-    })
+    Some(to_js_process_info(&result))
 }
 
 #[napi]

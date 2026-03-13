@@ -419,9 +419,10 @@ mod macos {
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
         let mut mib: [c_int; 4] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0];
-        let mut size: usize = 0;
+        let entry_size = mem::size_of::<KinfoProc>();
 
-        // Get size needed
+        // Query the kernel for the current byte size of the process table.
+        let mut size: usize = 0;
         unsafe {
             if sysctl(
                 mib.as_mut_ptr(),
@@ -438,37 +439,49 @@ mod macos {
             }
         }
 
-        // Allocate buffer
-        let count = size / mem::size_of::<KinfoProc>();
-        let mut procs: Vec<KinfoProc> = vec![unsafe { mem::zeroed() }; count];
+        // Add headroom up front to reduce the gap between the size probe and
+        // the actual fetch. If new processes appear meanwhile and the kernel
+        // returns ENOMEM, keep doubling until the buffer is large enough.
+        let mut buf_size = (size + size / 5).max(entry_size);
 
-        // Get process list
-        unsafe {
-            if sysctl(
-                mib.as_mut_ptr(),
-                3,
-                procs.as_mut_ptr() as *mut c_void,
-                &mut size,
-                ptr::null_mut(),
-                0,
-            ) != 0
-            {
-                return Err(SysInfoError::SysCall(
-                    "sysctl KERN_PROC_ALL failed".to_string(),
-                ));
+        loop {
+            let count = buf_size.div_ceil(entry_size);
+            let mut procs: Vec<KinfoProc> = vec![unsafe { mem::zeroed() }; count];
+            let mut actual_size = buf_size;
+
+            let ret = unsafe {
+                sysctl(
+                    mib.as_mut_ptr(),
+                    3,
+                    procs.as_mut_ptr() as *mut c_void,
+                    &mut actual_size,
+                    ptr::null_mut(),
+                    0,
+                )
+            };
+
+            if ret == 0 {
+                let actual_count = actual_size / entry_size;
+                let mut processes = Vec::with_capacity(actual_count);
+                for proc in procs.into_iter().take(actual_count) {
+                    processes.push(kinfo_to_process_info(&proc));
+                }
+                return Ok(processes);
             }
+
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno != libc::ENOMEM {
+                return Err(SysInfoError::SysCall(format!(
+                    "sysctl KERN_PROC_ALL failed (errno {errno})"
+                )));
+            }
+
+            // The process table grew between the size probe and the fetch.
+            // Grow aggressively to avoid repeated retries under churn.
+            buf_size = buf_size.checked_mul(2).ok_or_else(|| {
+                SysInfoError::SysCall("sysctl KERN_PROC_ALL buffer size overflow".to_string())
+            })?;
         }
-
-        let actual_count = size / mem::size_of::<KinfoProc>();
-        let mut processes = Vec::with_capacity(actual_count);
-
-        for i in 0..actual_count {
-            let kp = &procs[i];
-            let info = kinfo_to_process_info(kp);
-            processes.push(info);
-        }
-
-        Ok(processes)
     }
 
     pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {

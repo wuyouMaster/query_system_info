@@ -535,10 +535,7 @@ mod innerWindows {
         Ok(values)
     }
 
-    unsafe fn get_counter_instances(
-        _query: isize,
-        counter: isize,
-    ) -> Result<Vec<String>> {
+    unsafe fn get_counter_instances(_query: isize, counter: isize) -> Result<Vec<String>> {
         let mut buf_size = 0u32;
         let mut item_count = 0u32;
 

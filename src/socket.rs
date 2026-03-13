@@ -619,14 +619,17 @@ mod innerWindows {
             };
 
             let state = tcp_state_from_windows(row.dwState);
-            connections.entry(state).or_default().push(SocketConnection {
-                protocol: SocketProtocol::TcpV4,
-                local_addr,
-                remote_addr,
-                state,
-                pid: Some(row.dwOwningPid),
-                inode: 0,
-            });
+            connections
+                .entry(state)
+                .or_default()
+                .push(SocketConnection {
+                    protocol: SocketProtocol::TcpV4,
+                    local_addr,
+                    remote_addr,
+                    state,
+                    pid: Some(row.dwOwningPid),
+                    inode: 0,
+                });
         }
 
         Ok(connections)
@@ -682,14 +685,17 @@ mod innerWindows {
             };
 
             let state = tcp_state_from_windows(row.dwState);
-            connections.entry(state).or_default().push(SocketConnection {
-                protocol: SocketProtocol::TcpV6,
-                local_addr,
-                remote_addr,
-                state,
-                pid: Some(row.dwOwningPid),
-                inode: 0,
-            });
+            connections
+                .entry(state)
+                .or_default()
+                .push(SocketConnection {
+                    protocol: SocketProtocol::TcpV6,
+                    local_addr,
+                    remote_addr,
+                    state,
+                    pid: Some(row.dwOwningPid),
+                    inode: 0,
+                });
         }
 
         Ok(connections)

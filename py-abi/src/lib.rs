@@ -4,7 +4,7 @@ use pyo3::types::PyDict;
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::{list_processes, ProcessTracker};
+use query_system_info::process::{ProcessTracker, list_processes};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

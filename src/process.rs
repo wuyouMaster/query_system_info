@@ -623,8 +623,9 @@ mod macos {
 mod innerWindows {
     use super::*;
     use std::mem;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::core::PWSTR;
+    use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::ProcessStatus::{
         EnumProcesses, GetModuleBaseNameW, GetModuleFileNameExW, GetProcessMemoryInfo,
         PROCESS_MEMORY_COUNTERS,
@@ -632,9 +633,6 @@ mod innerWindows {
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32,
         PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
-    };
-    use windows::Wdk::System::Threading::{
-        NtQueryInformationProcess, ProcessBasicInformation,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {

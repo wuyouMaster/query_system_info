@@ -365,20 +365,16 @@ pub fn get_process_count() -> f64 {
 }
 
 #[napi]
-pub fn get_process_by_pid(pid: f64) -> JsProcessInfo {
-    let processes = list_processes().unwrap();
-    let result = processes
-        .iter()
-        .find(|p| p.pid == pid as u32)
-        .unwrap()
-        .clone();
-    JsProcessInfo {
+pub fn get_process_by_pid(pid: f64) -> Option<JsProcessInfo> {
+    let processes = list_processes().ok()?;
+    let result = processes.iter().find(|p| p.pid == pid as u32)?.clone();
+    Some(JsProcessInfo {
         pid: result.pid as f64,
         name: result.name.clone(),
         command: result.cmdline.join(" "),
         status: result.state.to_string(),
         memory_usage: result.memory_bytes as f64,
-    }
+    })
 }
 
 #[napi]

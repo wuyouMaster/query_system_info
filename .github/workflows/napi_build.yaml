@@ -267,7 +267,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
-          path: artifacts
+          path: ${{ github.workspace }}/js-abi/artifacts
       - name: Move artifacts
         run: yarn artifacts
       - name: List packages

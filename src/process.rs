@@ -627,12 +627,11 @@ mod innerWindows {
     use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::ProcessStatus::{
-        EnumProcesses, GetModuleBaseNameW, GetModuleFileNameExW, GetProcessMemoryInfo,
-        PROCESS_MEMORY_COUNTERS,
+        EnumProcesses, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
     };
 
     pub fn list_processes() -> Result<Vec<ProcessInfo>> {
@@ -687,11 +686,14 @@ mod innerWindows {
         };
 
         unsafe {
+            // Keep PROCESS_QUERY_INFORMATION | PROCESS_VM_READ so that protected/kernel
+            // processes (System PID 4, Registry, etc.) continue to be rejected by
+            // OpenProcess and skipped — avoiding any risk of SEH exceptions from
+            // NtQueryInformationProcess or QueryFullProcessImageNameW on those handles.
             let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
                 .map_err(|_| {
                     SysInfoError::PermissionDenied(format!("Cannot open process {}", pid))
                 })?;
-
             let _handle_guard = HandleGuard(handle);
 
             // Get PPID via NtQueryInformationProcess
@@ -706,14 +708,11 @@ mod innerWindows {
             );
             info.ppid = pbi.InheritedFromUniqueProcessId as u32;
 
-            // Get process name
-            let mut name_buffer: [u16; 260] = [0; 260];
-            let len = GetModuleBaseNameW(handle, None, &mut name_buffer);
-            if len > 0 {
-                info.name = String::from_utf16_lossy(&name_buffer[..len as usize]);
-            }
-
-            // Get exe path
+            // Get exe path and derive the process name from it.
+            // QueryFullProcessImageNameW is safe for all user-accessible processes and
+            // does not read from the target process's memory, unlike GetModuleBaseNameW
+            // which calls ReadProcessMemory internally and causes STATUS_HEAP_CORRUPTION
+            // when the target is a WOW64 (32-bit) or partially-initialized process.
             let mut path_buffer: [u16; 260] = [0; 260];
             let mut path_len = path_buffer.len() as u32;
             if QueryFullProcessImageNameW(
@@ -727,12 +726,14 @@ mod innerWindows {
             {
                 info.exe_path = String::from_utf16_lossy(&path_buffer[..path_len as usize]);
                 info.cmdline = vec![info.exe_path.clone()];
+                if let Some(name) = std::path::Path::new(&info.exe_path).file_name() {
+                    info.name = name.to_string_lossy().to_string();
+                }
             }
 
-            // Get memory info
+            // Get memory info using the same handle (already has PROCESS_VM_READ).
             let mut mem_counters: PROCESS_MEMORY_COUNTERS = mem::zeroed();
             mem_counters.cb = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-
             if GetProcessMemoryInfo(
                 handle,
                 &mut mem_counters,

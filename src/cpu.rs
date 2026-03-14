@@ -26,22 +26,39 @@ pub fn get_cpu_info() -> Result<CpuInfo> {
 
 /// Get CPU usage percentage (requires two samples with a delay)
 pub fn get_cpu_usage(sample_duration: Duration) -> Result<Vec<f64>> {
-    let times1 = get_cpu_times()?;
-    thread::sleep(sample_duration);
-    let times2 = get_cpu_times()?;
+    // Windows: PDH counters already return percentages directly; no diff math needed.
+    #[cfg(target_os = "windows")]
+    return innerWindows::get_cpu_usage(sample_duration);
 
-    let mut usages = Vec::new();
-    for i in 0..times1.len() {
-        let total1 =
-            times1[i].user + times1[i].system + times1[i].idle + times1[i].nice + times1[i].iowait;
-        let total2 =
-            times2[i].user + times2[i].system + times2[i].idle + times2[i].nice + times2[i].iowait;
-        let total_diff = total2.saturating_sub(total1);
-        let idle_diff = times2[i].idle.saturating_sub(times1[i].idle);
-        let usage = ((total_diff - idle_diff) as f64 / total_diff as f64) * 100.0;
-        usages.push(usage);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let times1 = get_cpu_times()?;
+        thread::sleep(sample_duration);
+        let times2 = get_cpu_times()?;
+
+        let mut usages = Vec::new();
+        for i in 0..times1.len() {
+            let total1 = times1[i].user
+                + times1[i].system
+                + times1[i].idle
+                + times1[i].nice
+                + times1[i].iowait;
+            let total2 = times2[i].user
+                + times2[i].system
+                + times2[i].idle
+                + times2[i].nice
+                + times2[i].iowait;
+            let total_diff = total2.saturating_sub(total1);
+            let idle_diff = times2[i].idle.saturating_sub(times1[i].idle);
+            let usage = if total_diff == 0 {
+                0.0
+            } else {
+                ((total_diff - idle_diff) as f64 / total_diff as f64) * 100.0
+            };
+            usages.push(usage);
+        }
+        Ok(usages)
     }
-    Ok(usages)
 }
 
 /// Get raw CPU times
@@ -572,6 +589,7 @@ mod innerWindows {
     unsafe fn collect_counter_array(counter: isize) -> Vec<f64> {
         let mut buf_size = 0u32;
         let mut item_count = 0u32;
+        // First call: get required buffer size in bytes
         let _ = PdhGetFormattedCounterArrayW(
             counter,
             PDH_FMT_DOUBLE,
@@ -579,18 +597,32 @@ mod innerWindows {
             &mut item_count,
             None,
         );
-        let mut items = vec![
-            PDH_FMT_COUNTERVALUE_ITEM_W::default();
-            buf_size as usize / mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>()
-        ];
-        PdhGetFormattedCounterArrayW(
+        if buf_size == 0 {
+            return Vec::new();
+        }
+        // Allocate a raw byte buffer of exactly the size PDH requested.
+        // PDH_FMT_COUNTERVALUE_ITEM_W contains a PWSTR that points into the
+        // trailing string data within this same buffer, so we must give PDH
+        // the full byte count — not just item_count * size_of::<...>().
+        let item_size = mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+        let capacity = ((buf_size as usize) + item_size - 1) / item_size;
+        let mut items: Vec<PDH_FMT_COUNTERVALUE_ITEM_W> = Vec::with_capacity(capacity);
+        // Tell PDH the true byte size we allocated
+        let mut actual_buf_size = (capacity * item_size) as u32;
+        let mut actual_item_count = 0u32;
+        let status = PdhGetFormattedCounterArrayW(
             counter,
             PDH_FMT_DOUBLE,
-            &mut buf_size,
-            &mut item_count,
+            &mut actual_buf_size,
+            &mut actual_item_count,
             Some(items.as_mut_ptr()),
         );
-        items[..item_count as usize]
+        if status != 0 {
+            return Vec::new();
+        }
+        // Safe: PDH wrote actual_item_count items into the buffer
+        items.set_len(actual_item_count as usize);
+        items
             .iter()
             .map(|item| item.FmtValue.Anonymous.doubleValue)
             .collect()
@@ -639,31 +671,52 @@ mod innerWindows {
             );
 
             PdhCollectQueryData(query);
-            std::thread::sleep(std::time::Duration::from_millis(1000));
+            PdhCloseQuery(query);
+
+            // get_cpu_times on Windows is not meaningful for diff-based usage;
+            // return empty so callers that need real data use get_cpu_usage instead.
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn get_cpu_usage(sample_duration: Duration) -> Result<Vec<f64>> {
+        unsafe {
+            let mut query: isize = 0;
+            PdhOpenQueryW(None, 0, &mut query);
+
+            let mut c_user: isize = 0;
+            let mut c_idle: isize = 0;
+
+            PdhAddCounterW(
+                query,
+                windows::core::w!(r"\Processor(*)\% Processor Time"),
+                0,
+                &mut c_user,
+            );
+            PdhAddCounterW(
+                query,
+                windows::core::w!(r"\Processor(*)\% Idle Time"),
+                0,
+                &mut c_idle,
+            );
+
+            // PDH needs two collections separated by an interval to compute rates
+            PdhCollectQueryData(query);
+            std::thread::sleep(sample_duration);
             PdhCollectQueryData(query);
 
-            let user_vals = collect_counter_array(c_user);
-            let system_vals = collect_counter_array(c_system);
-            let idle_vals = collect_counter_array(c_idle);
-            let irq_vals = collect_counter_array(c_irq);
-            let dpc_vals = collect_counter_array(c_dpc);
+            let processor_vals = collect_counter_array(c_user);
 
             PdhCloseQuery(query);
 
-            let core_count = user_vals.len().saturating_sub(1);
-            let times = (0..core_count)
-                .map(|i| CpuTimes {
-                    user: user_vals[i] as u64,
-                    system: system_vals[i] as u64,
-                    idle: idle_vals[i] as u64,
-                    irq: irq_vals[i] as u64,
-                    interrupt: irq_vals[i] as u64,
-                    dpc: dpc_vals[i] as u64,
-                    ..Default::default()
-                })
+            // PDH includes a "_Total" entry as the last item; drop it
+            let core_count = processor_vals.len().saturating_sub(1);
+            let usages = processor_vals[..core_count]
+                .iter()
+                .map(|&v| v.clamp(0.0, 100.0))
                 .collect();
 
-            Ok(times)
+            Ok(usages)
         }
     }
 

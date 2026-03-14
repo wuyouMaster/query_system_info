@@ -6,7 +6,7 @@ use query_system_info::memory::get_memory_info;
 use query_system_info::process::{ProcessTracker, list_processes};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -123,15 +123,18 @@ fn to_js_process_info(process: &query_system_info::types::ProcessInfo) -> JsProc
 impl JsSystemSummary {
     #[napi(constructor)]
     pub fn new(duration: Option<f64>) -> napi::Result<Self> {
-        let memory = get_memory_info().unwrap();
-        let cpu = get_cpu_info().unwrap();
-        let disks = get_disks().unwrap();
-        let socket_summary = get_socket_summary().unwrap();
-        let connections = get_all_connections().unwrap();
+        let memory = into_napi_result(get_memory_info(), "get_memory_info failed")?;
+        let cpu = into_napi_result(get_cpu_info(), "get_cpu_info failed")?;
+        let disks = into_napi_result(get_disks(), "get_disks failed")?;
+        let socket_summary = into_napi_result(get_socket_summary(), "get_socket_summary failed")?;
+        let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
         let processes = into_napi_result(list_processes(), "list_processes failed")?;
         let process_count = processes.len();
         let use_duration = duration.unwrap_or(500.0 as f64);
-        let cpu_usage = get_cpu_usage(Duration::from_millis(use_duration as u64)).unwrap();
+        let cpu_usage = into_napi_result(
+            get_cpu_usage(Duration::from_millis(use_duration as u64)),
+            "get_cpu_usage failed",
+        )?;
         Ok(Self {
             memory: JsMemoryInfo {
                 total: memory.total as f64,
@@ -208,39 +211,29 @@ impl JsSystemSummary {
     }
 
     #[napi]
-    pub fn get_connection_by_pid(&self, pid: f64) -> JsSocketConnection {
-        self.connections
-            .iter()
-            .find(|c| c.pid == pid)
-            .unwrap()
-            .clone()
+    pub fn get_connection_by_pid(&self, pid: f64) -> Option<JsSocketConnection> {
+        self.connections.iter().find(|c| c.pid == pid).cloned()
     }
 
     #[napi]
-    pub fn get_connection_by_inode(&self, inode: f64) -> JsSocketConnection {
-        self.connections
-            .iter()
-            .find(|c| c.inode == inode)
-            .unwrap()
-            .clone()
+    pub fn get_connection_by_inode(&self, inode: f64) -> Option<JsSocketConnection> {
+        self.connections.iter().find(|c| c.inode == inode).cloned()
     }
 
     #[napi]
-    pub fn get_connection_by_local_addr(&self, local_addr: String) -> JsSocketConnection {
+    pub fn get_connection_by_local_addr(&self, local_addr: String) -> Option<JsSocketConnection> {
         self.connections
             .iter()
             .find(|c| c.local_addr == local_addr)
-            .unwrap()
-            .clone()
+            .cloned()
     }
 
     #[napi]
-    pub fn get_connection_by_remote_addr(&self, remote_addr: String) -> JsSocketConnection {
+    pub fn get_connection_by_remote_addr(&self, remote_addr: String) -> Option<JsSocketConnection> {
         self.connections
             .iter()
             .find(|c| c.remote_addr == remote_addr)
-            .unwrap()
-            .clone()
+            .cloned()
     }
 
     #[napi]
@@ -274,38 +267,41 @@ impl JsSystemSummary {
 }
 
 #[napi]
-pub fn js_get_cpu_usage(duration: Option<f64>) -> Vec<f64> {
-    get_cpu_usage(Duration::from_millis(duration.unwrap_or(500.0) as u64)).unwrap()
+pub fn js_get_cpu_usage(duration: Option<f64>) -> napi::Result<Vec<f64>> {
+    into_napi_result(
+        get_cpu_usage(Duration::from_millis(duration.unwrap_or(500.0) as u64)),
+        "get_cpu_usage failed",
+    )
 }
 
 #[napi]
-pub fn js_get_cpu_info() -> JsCpuInfo {
-    let cpu_info = get_cpu_info().unwrap();
-    JsCpuInfo {
+pub fn js_get_cpu_info() -> napi::Result<JsCpuInfo> {
+    let cpu_info = into_napi_result(get_cpu_info(), "get_cpu_info failed")?;
+    Ok(JsCpuInfo {
         physical_cores: cpu_info.physical_cores,
         logical_cores: cpu_info.logical_cores,
         model_name: cpu_info.model_name,
         vendor: cpu_info.vendor,
         frequency_mhz: cpu_info.frequency_mhz as f64,
-    }
+    })
 }
 
 #[napi]
-pub fn js_get_memory_info() -> JsMemoryInfo {
-    let memory_info = get_memory_info().unwrap();
-    JsMemoryInfo {
+pub fn js_get_memory_info() -> napi::Result<JsMemoryInfo> {
+    let memory_info = into_napi_result(get_memory_info(), "get_memory_info failed")?;
+    Ok(JsMemoryInfo {
         total: memory_info.total as f64,
         available: memory_info.available as f64,
         used: memory_info.used as f64,
         free: memory_info.free as f64,
         usage_percent: memory_info.usage_percent as f64,
-    }
+    })
 }
 
 #[napi]
-pub fn js_get_disks() -> Vec<JsDiskInfo> {
-    let disks = get_disks().unwrap();
-    disks
+pub fn js_get_disks() -> napi::Result<Vec<JsDiskInfo>> {
+    let disks = into_napi_result(get_disks(), "get_disks failed")?;
+    Ok(disks
         .iter()
         .map(|d| JsDiskInfo {
             device: d.device.clone(),
@@ -316,25 +312,25 @@ pub fn js_get_disks() -> Vec<JsDiskInfo> {
             available_bytes: d.available_bytes as f64,
             usage_percent: d.usage_percent as f64,
         })
-        .collect()
+        .collect())
 }
 
 #[napi]
-pub fn js_get_socket_summary() -> JsSocketStateSummary {
-    let socket_summary = get_socket_summary().unwrap();
-    JsSocketStateSummary {
+pub fn js_get_socket_summary() -> napi::Result<JsSocketStateSummary> {
+    let socket_summary = into_napi_result(get_socket_summary(), "get_socket_summary failed")?;
+    Ok(JsSocketStateSummary {
         total: socket_summary.total as f64,
         established: socket_summary.established as f64,
         listen: socket_summary.listen as f64,
         time_wait: socket_summary.time_wait as f64,
         close_wait: socket_summary.close_wait as f64,
-    }
+    })
 }
 
 #[napi]
-pub fn get_connections() -> Vec<JsSocketConnection> {
-    let connections = get_all_connections().unwrap();
-    connections
+pub fn get_connections() -> napi::Result<Vec<JsSocketConnection>> {
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
+    Ok(connections
         .values()
         .flatten()
         .map(|c| JsSocketConnection {
@@ -348,7 +344,7 @@ pub fn get_connections() -> Vec<JsSocketConnection> {
             pid: c.pid.unwrap_or(0) as f64,
             inode: c.inode as f64,
         })
-        .collect()
+        .collect())
 }
 
 #[napi]
@@ -371,171 +367,106 @@ pub fn get_process_by_pid(pid: f64) -> Option<JsProcessInfo> {
 }
 
 #[napi]
-pub fn get_connection_by_pid(pid: u32) -> JsSocketConnection {
-    let connections = get_all_connections().unwrap();
+pub fn get_connection_by_pid(pid: u32) -> napi::Result<Option<JsSocketConnection>> {
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
     let result = connections
         .values()
         .flatten()
         .find(|c| c.pid == Some(pid as u32))
-        .unwrap()
-        .clone();
-    JsSocketConnection {
-        protocol: result.protocol.to_string(),
-        local_addr: result.local_addr.to_string(),
-        remote_addr: result
+        .cloned();
+    Ok(result.map(|r| JsSocketConnection {
+        protocol: r.protocol.to_string(),
+        local_addr: r.local_addr.to_string(),
+        remote_addr: r
             .remote_addr
             .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .to_string(),
-        state: result.state.to_string(),
-        pid: result.pid.unwrap_or(0) as f64,
-        inode: result.inode as f64,
-    }
+        state: r.state.to_string(),
+        pid: r.pid.unwrap_or(0) as f64,
+        inode: r.inode as f64,
+    }))
 }
 
 #[napi]
-pub fn get_connection_by_inode(inode: f64) -> JsSocketConnection {
-    let connections = get_all_connections().unwrap();
+pub fn get_connection_by_inode(inode: f64) -> napi::Result<Option<JsSocketConnection>> {
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
     let result = connections
         .values()
         .flatten()
         .find(|c| c.inode == inode as u64)
-        .unwrap()
-        .clone();
-    JsSocketConnection {
-        protocol: result.protocol.to_string(),
-        local_addr: result.local_addr.to_string(),
-        remote_addr: result
+        .cloned();
+    Ok(result.map(|r| JsSocketConnection {
+        protocol: r.protocol.to_string(),
+        local_addr: r.local_addr.to_string(),
+        remote_addr: r
             .remote_addr
             .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .to_string(),
-        state: result.state.to_string(),
-        pid: result.pid.unwrap_or(0) as f64,
-        inode: result.inode as f64,
-    }
+        state: r.state.to_string(),
+        pid: r.pid.unwrap_or(0) as f64,
+        inode: r.inode as f64,
+    }))
 }
 
 #[napi]
-pub fn get_connection_by_local_addr(local_addr: String) -> JsSocketConnection {
-    let ip_parts = local_addr.split('.').collect::<Vec<&str>>();
-    let use_addr: SocketAddr;
-    if ip_parts.len() == 4 {
-        let use_ip_parts = ip_parts
-            .iter()
-            .map(|p| p.parse::<u8>().unwrap())
-            .collect::<Vec<u8>>();
-        use_addr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(
-                use_ip_parts[0],
-                use_ip_parts[1],
-                use_ip_parts[2],
-                use_ip_parts[3],
-            )),
-            0,
-        );
-    } else {
-        let use_ip_parts = ip_parts
-            .iter()
-            .map(|p| p.parse::<u16>().unwrap())
-            .collect::<Vec<u16>>();
-        use_addr = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(
-                use_ip_parts[0],
-                use_ip_parts[1],
-                use_ip_parts[2],
-                use_ip_parts[3],
-                use_ip_parts[4],
-                use_ip_parts[5],
-                use_ip_parts[6],
-                use_ip_parts[7],
-            )),
-            0,
-        );
-    }
-    let connections = get_all_connections().unwrap();
+pub fn get_connection_by_local_addr(
+    local_addr: String,
+) -> napi::Result<Option<JsSocketConnection>> {
+    let parsed: SocketAddr = local_addr
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("invalid local_addr: {e}")))?;
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
     let result = connections
         .values()
         .flatten()
-        .find(|c| c.local_addr == use_addr)
-        .unwrap()
-        .clone();
-    JsSocketConnection {
-        protocol: result.protocol.to_string(),
-        local_addr: result.local_addr.to_string(),
-        remote_addr: result
+        .find(|c| c.local_addr == parsed)
+        .cloned();
+    Ok(result.map(|r| JsSocketConnection {
+        protocol: r.protocol.to_string(),
+        local_addr: r.local_addr.to_string(),
+        remote_addr: r
             .remote_addr
             .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .to_string(),
-        state: result.state.to_string(),
-        pid: result.pid.unwrap_or(0) as f64,
-        inode: result.inode as f64,
-    }
+        state: r.state.to_string(),
+        pid: r.pid.unwrap_or(0) as f64,
+        inode: r.inode as f64,
+    }))
 }
 
 #[napi]
-pub fn get_connection_by_remote_addr(remote_addr: String) -> JsSocketConnection {
-    let ip_parts = remote_addr.split('.').collect::<Vec<&str>>();
-    let use_addr: SocketAddr;
-    if ip_parts.len() == 4 {
-        let use_ip_parts = ip_parts
-            .iter()
-            .map(|p| p.parse::<u8>().unwrap())
-            .collect::<Vec<u8>>();
-        use_addr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(
-                use_ip_parts[0],
-                use_ip_parts[1],
-                use_ip_parts[2],
-                use_ip_parts[3],
-            )),
-            0,
-        );
-    } else {
-        let use_ip_parts = ip_parts
-            .iter()
-            .map(|p| p.parse::<u16>().unwrap())
-            .collect::<Vec<u16>>();
-        use_addr = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(
-                use_ip_parts[0],
-                use_ip_parts[1],
-                use_ip_parts[2],
-                use_ip_parts[3],
-                use_ip_parts[4],
-                use_ip_parts[5],
-                use_ip_parts[6],
-                use_ip_parts[7],
-            )),
-            0,
-        );
-    }
-    let connections = get_all_connections().unwrap();
+pub fn get_connection_by_remote_addr(
+    remote_addr: String,
+) -> napi::Result<Option<JsSocketConnection>> {
+    let parsed: SocketAddr = remote_addr
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("invalid remote_addr: {e}")))?;
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
     let result = connections
         .values()
         .flatten()
-        .find(|c| c.remote_addr == Some(use_addr))
-        .unwrap()
-        .clone();
-    JsSocketConnection {
-        protocol: result.protocol.to_string(),
-        local_addr: result.local_addr.to_string(),
-        remote_addr: result
+        .find(|c| c.remote_addr == Some(parsed))
+        .cloned();
+    Ok(result.map(|r| JsSocketConnection {
+        protocol: r.protocol.to_string(),
+        local_addr: r.local_addr.to_string(),
+        remote_addr: r
             .remote_addr
             .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .to_string(),
-        state: result.state.to_string(),
-        pid: result.pid.unwrap_or(0) as f64,
-        inode: result.inode as f64,
-    }
+        state: r.state.to_string(),
+        pid: r.pid.unwrap_or(0) as f64,
+        inode: r.inode as f64,
+    }))
 }
 
 #[napi]
-pub fn get_connection_by_state(state: String) -> Vec<JsSocketConnection> {
-    let state = SocketState::try_from(state.as_str()).unwrap();
-    let connections = get_all_connections().unwrap();
-    connections
-        .get(&state)
-        .unwrap()
-        .clone()
+pub fn get_connection_by_state(state: String) -> napi::Result<Vec<JsSocketConnection>> {
+    let socket_state = SocketState::try_from(state.as_str())
+        .map_err(|_| napi::Error::from_reason(format!("invalid state: {state}")))?;
+    let connections = into_napi_result(get_all_connections(), "get_all_connections failed")?;
+    let result = connections.get(&socket_state).cloned().unwrap_or_default();
+    Ok(result
         .iter()
         .map(|c| JsSocketConnection {
             protocol: c.protocol.to_string(),
@@ -548,7 +479,7 @@ pub fn get_connection_by_state(state: String) -> Vec<JsSocketConnection> {
             pid: c.pid.unwrap_or(0) as f64,
             inode: c.inode as f64,
         })
-        .collect()
+        .collect())
 }
 
 #[napi]
@@ -567,23 +498,25 @@ impl JsProcessTracker {
 pub fn start_tracking_children(
     pid: f64,
     callback: ThreadsafeFunction<JsChildProcessEvent>,
-) -> JsProcessTracker {
-    let tracker = query_system_info::process::start_tracking_children(pid as u32, move |event| {
-        let js_event = JsChildProcessEvent {
-            pid: event.pid as f64,
-            ppid: event.ppid as f64,
-            name: event.name,
-            cmdline: event.cmdline,
-            exe_path: event.exe_path,
-            start_time: event.start_time as f64,
-        };
-        callback.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
-    })
-    .unwrap();
+) -> napi::Result<JsProcessTracker> {
+    let tracker = into_napi_result(
+        query_system_info::process::start_tracking_children(pid as u32, move |event| {
+            let js_event = JsChildProcessEvent {
+                pid: event.pid as f64,
+                ppid: event.ppid as f64,
+                name: event.name,
+                cmdline: event.cmdline,
+                exe_path: event.exe_path,
+                start_time: event.start_time as f64,
+            };
+            callback.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
+        }),
+        "start_tracking_children failed",
+    )?;
 
-    JsProcessTracker {
+    Ok(JsProcessTracker {
         tracker: Arc::new(Mutex::new(Some(tracker))),
-    }
+    })
 }
 
 #[cfg(test)]

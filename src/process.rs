@@ -123,6 +123,23 @@ fn find_all_children(root_pid: u32) -> Result<Vec<ChildProcessEvent>> {
     Ok(result)
 }
 
+/// Kill a process by PID. Sends SIGKILL on Unix, calls TerminateProcess on Windows.
+pub fn kill_process(pid: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    return linux::kill_process(pid);
+
+    #[cfg(target_os = "macos")]
+    return macos::kill_process(pid);
+
+    #[cfg(target_os = "windows")]
+    return innerWindows::kill_process(pid);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
+}
+
 /// Get information about a specific process
 pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
     #[cfg(target_os = "linux")]
@@ -169,9 +186,22 @@ mod linux {
         Ok(processes)
     }
 
+    pub fn kill_process(pid: u32) -> Result<()> {
+        let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            let err = std::io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::ESRCH) => Err(SysInfoError::ProcessNotFound(pid)),
+                Some(libc::EPERM) => Err(SysInfoError::PermissionDenied(format!("kill pid {pid}"))),
+                _ => Err(SysInfoError::SysCall(format!("kill({pid}) failed: {err}"))),
+            }
+        }
+    }
+
     pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
         let proc_path = Path::new("/proc").join(pid.to_string());
-
         if !proc_path.exists() {
             return Err(SysInfoError::ProcessNotFound(pid));
         }
@@ -484,6 +514,20 @@ mod macos {
         }
     }
 
+    pub fn kill_process(pid: u32) -> Result<()> {
+        let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            let err = std::io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::ESRCH) => Err(SysInfoError::ProcessNotFound(pid)),
+                Some(libc::EPERM) => Err(SysInfoError::PermissionDenied(format!("kill pid {pid}"))),
+                _ => Err(SysInfoError::SysCall(format!("kill({pid}) failed: {err}"))),
+            }
+        }
+    }
+
     pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
         let mut mib: [c_int; 4] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid as c_int];
         let mut kp: KinfoProc = unsafe { mem::zeroed() };
@@ -677,6 +721,20 @@ mod innerWindows {
         }
 
         Ok(processes)
+    }
+
+    pub fn kill_process(pid: u32) -> Result<()> {
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, false, pid).map_err(|_| {
+                SysInfoError::PermissionDenied(format!("Cannot open process {pid} for termination"))
+            })?;
+            let _guard = HandleGuard(handle);
+            TerminateProcess(handle, 1).map_err(|e| {
+                SysInfoError::WindowsApi(format!("TerminateProcess({pid}) failed: {e}"))
+            })?;
+        }
+        Ok(())
     }
 
     pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {

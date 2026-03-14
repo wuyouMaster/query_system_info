@@ -360,6 +360,14 @@ pub fn get_process_count() -> napi::Result<f64> {
 }
 
 #[napi]
+pub fn kill_process(pid: f64) -> napi::Result<()> {
+    into_napi_result(
+        query_system_info::process::kill_process(pid as u32),
+        "kill_process failed",
+    )
+}
+
+#[napi]
 pub fn get_process_by_pid(pid: f64) -> Option<JsProcessInfo> {
     let processes = list_processes().ok()?;
     let result = processes.iter().find(|p| p.pid == pid as u32)?.clone();

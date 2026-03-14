@@ -359,6 +359,40 @@ pub fn get_process_count() -> napi::Result<f64> {
     Ok(processes.len() as f64)
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsDirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: f64,
+}
+
+#[napi]
+pub fn list_dir(path: String) -> napi::Result<Vec<JsDirEntry>> {
+    let entries = std::fs::read_dir(&path)
+        .map_err(|e| napi::Error::from_reason(format!("list_dir({path}): {e}")))?;
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let full_path = entry.path().to_string_lossy().to_string();
+        let is_dir = meta.is_dir();
+        let size = if is_dir { 0.0 } else { meta.len() as f64 };
+        result.push(JsDirEntry {
+            name,
+            path: full_path,
+            is_dir,
+            size,
+        });
+    }
+    result.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+    Ok(result)
+}
+
 #[napi]
 pub fn kill_process(pid: f64) -> napi::Result<()> {
     into_napi_result(

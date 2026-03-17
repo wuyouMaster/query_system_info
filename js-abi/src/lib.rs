@@ -3,7 +3,7 @@ use napi_derive::napi;
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::{ProcessTracker, list_processes};
+use query_system_info::process::{list_processes, ProcessTracker};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_get_connections() {
-        let connections = get_connections();
+        let connections = get_connections().expect("get_connections failed");
         assert!(!connections.is_empty());
         for connection in connections {
             println!(
@@ -583,7 +583,7 @@ mod tests {
     }
     #[test]
     fn test_get_processes() {
-        let processes = get_processes();
+        let processes = get_processes().expect("get_processes failed");
         assert!(!processes.is_empty());
     }
 }

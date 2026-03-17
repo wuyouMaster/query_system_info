@@ -38,7 +38,7 @@
 //!
 //!     // Get CPU usage (requires sampling)
 //!     let cpu_usage = cpu::get_cpu_usage(Duration::from_millis(500))?;
-//!     println!("CPU Usage: {:.1}%", cpu_usage);
+//!     println!("CPU Usage: {:?}", cpu_usage);
 //!
 //!     // List processes
 //!     let processes = process::list_processes()?;
@@ -78,9 +78,11 @@
 //! fn main() -> query_system_info::Result<()> {
 //!     // Get all TCP connections
 //!     let tcp_conns = socket::get_tcp_connections()?;
-//!     for conn in &tcp_conns {
-//!         println!("{} {} -> {:?} [{}]",
-//!             conn.protocol, conn.local_addr, conn.remote_addr, conn.state);
+//!     for (_state, connections) in &tcp_conns {
+//!         for conn in connections {
+//!             println!("{} {} -> {:?} [{}]",
+//!                 conn.protocol, conn.local_addr, conn.remote_addr, conn.state);
+//!         }
 //!     }
 //!
 //!     // Get socket state summary

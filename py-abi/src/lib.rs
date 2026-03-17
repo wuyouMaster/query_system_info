@@ -638,17 +638,17 @@ mod tests {
 
     #[test]
     fn test_get_connections() {
-        let connections = get_connections();
+        let connections = get_connections().expect("get_connections failed");
         assert!(!connections.is_empty());
     }
     #[test]
     fn test_get_processes() {
-        let processes = get_processes();
+        let processes = get_processes().expect("get_processes failed");
         assert!(!processes.is_empty());
     }
     #[test]
     fn test_get_process_count() {
-        let process_count = get_process_count();
+        let process_count = get_process_count().expect("get_process_count failed");
         assert!(process_count > 0);
     }
 }

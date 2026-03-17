@@ -3,7 +3,8 @@
 //! Provides cross-platform process information gathering.
 
 use crate::error::{Result, SysInfoError};
-use crate::types::{ChildProcessEvent, ProcessInfo, ProcessState};
+use crate::socket;
+use crate::types::{ChildProcessEvent, ProcessInfo, ProcessState, SocketConnectionEvent};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,11 +32,23 @@ pub struct ProcessTracker {
     handle: Arc<Mutex<TrackerState>>,
 }
 
+/// Process socket tracker handle
+pub struct ProcessSocketTracker {
+    handle: Arc<Mutex<SocketTrackerState>>,
+}
+
 struct TrackerState {
     root_pid: u32,
     running: bool,
     known_pids: HashSet<u32>,
     callback: Box<dyn Fn(ChildProcessEvent) + Send + 'static>,
+}
+
+struct SocketTrackerState {
+    pid: u32,
+    running: bool,
+    known_inodes: HashSet<u64>,
+    callback: Box<dyn Fn(SocketConnectionEvent) + Send + 'static>,
 }
 
 /// Start tracking child processes of a given PID
@@ -58,8 +71,37 @@ where
     Ok(ProcessTracker { handle: state })
 }
 
+/// Start tracking socket connections of a given PID
+pub fn start_tracking_sockets<F>(pid: u32, callback: F) -> Result<ProcessSocketTracker>
+where
+    F: Fn(SocketConnectionEvent) + Send + 'static,
+{
+    let state = Arc::new(Mutex::new(SocketTrackerState {
+        pid,
+        running: true,
+        known_inodes: HashSet::new(),
+        callback: Box::new(callback),
+    }));
+
+    let state_clone = Arc::clone(&state);
+    thread::spawn(move || {
+        socket_track_loop(state_clone);
+    });
+
+    Ok(ProcessSocketTracker { handle: state })
+}
+
 impl ProcessTracker {
     /// Stop tracking child processes
+    pub fn stop(&self) {
+        if let Ok(mut state) = self.handle.lock() {
+            state.running = false;
+        }
+    }
+}
+
+impl ProcessSocketTracker {
+    /// Stop tracking socket connections
     pub fn stop(&self) {
         if let Ok(mut state) = self.handle.lock() {
             state.running = false;
@@ -84,6 +126,30 @@ fn track_loop(state: Arc<Mutex<TrackerState>>) {
                 if !state_lock.known_pids.contains(&child.pid) {
                     state_lock.known_pids.insert(child.pid);
                     (state_lock.callback)(child);
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn socket_track_loop(state: Arc<Mutex<SocketTrackerState>>) {
+    loop {
+        let (pid, running) = {
+            let s = state.lock().unwrap();
+            (s.pid, s.running)
+        };
+
+        if !running {
+            break;
+        }
+
+        if let Ok(connections) = socket::get_connections_by_pid(pid) {
+            let mut state_lock = state.lock().unwrap();
+            for conn in connections {
+                if state_lock.known_inodes.insert(conn.inode) {
+                    (state_lock.callback)(conn);
                 }
             }
         }
@@ -849,6 +915,23 @@ mod tests {
             called_clone.store(true, Ordering::SeqCst);
         })
         .expect("Failed to start tracking");
+
+        thread::sleep(Duration::from_millis(100));
+        tracker.stop();
+    }
+
+    #[test]
+    fn test_socket_tracking_api() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = Arc::clone(&called);
+
+        let tracker = start_tracking_sockets(std::process::id(), move |_event| {
+            called_clone.store(true, Ordering::SeqCst);
+        })
+        .expect("Failed to start socket tracking");
 
         thread::sleep(Duration::from_millis(100));
         tracker.stop();

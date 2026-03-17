@@ -277,6 +277,23 @@ pub struct SocketConnection {
     pub inode: u64,
 }
 
+/// Socket connection event for process tracking
+#[derive(Debug, Clone)]
+pub struct SocketConnectionEvent {
+    /// Socket protocol
+    pub protocol: SocketProtocol,
+    /// Local address
+    pub local_addr: SocketAddr,
+    /// Remote address (None for listening sockets)
+    pub remote_addr: Option<SocketAddr>,
+    /// Connection state
+    pub state: SocketState,
+    /// Process ID owning this socket
+    pub pid: u32,
+    /// Inode number (Linux specific)
+    pub inode: u64,
+}
+
 /// Socket protocol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SocketProtocol {

@@ -8,7 +8,9 @@
 //! - **Windows**: Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from IP Helper API
 
 use crate::error::{Result, SysInfoError};
-use crate::types::{SocketConnection, SocketProtocol, SocketState, SocketStateSummary};
+use crate::types::{
+    SocketConnection, SocketConnectionEvent, SocketProtocol, SocketState, SocketStateSummary,
+};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -45,6 +47,25 @@ pub fn get_socket_summary() -> Result<SocketStateSummary> {
             .flatten()
             .collect::<Vec<&SocketConnection>>(),
     ))
+}
+
+/// Get socket connections for a specific process ID
+pub fn get_connections_by_pid(pid: u32) -> Result<Vec<SocketConnectionEvent>> {
+    let connections = get_all_connections()?;
+    let mut result = Vec::new();
+    for conn in connections.values().flatten() {
+        if conn.pid == Some(pid) {
+            result.push(SocketConnectionEvent {
+                protocol: conn.protocol,
+                local_addr: conn.local_addr,
+                remote_addr: conn.remote_addr,
+                state: conn.state,
+                pid,
+                inode: conn.inode,
+            });
+        }
+    }
+    Ok(result)
 }
 
 /// Get TCP IPv4 connections

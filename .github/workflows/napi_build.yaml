@@ -1,0 +1,293 @@
+name: napi build
+env:
+  DEBUG: napi:*
+  APP_NAME: js-query-system-info
+  CARGO_INCREMENTAL: '1'
+'on':
+  push:
+    branches:
+      - main
+    tags-ignore:
+      - '**'
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+      - '**/*.gitignore'
+      - .editorconfig
+      - docs/**
+  pull_request: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js-abi
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Cargo fmt
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          # macos
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+            build: yarn build --target x86_64-apple-darwin
+          - host: macos-14
+            target: aarch64-apple-darwin
+            build: yarn build --target aarch64-apple-darwin
+          # linux
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
+          - host: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross
+          # musllinxu
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            build: yarn build --target x86_64-unknown-linux-musl -x
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            build: yarn build --target aarch64-unknown-linux-musl -x
+          # windows
+          - host: windows-latest
+            build: yarn build --target x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
+    name: stable - ${{ matrix.settings.target }} - node@22
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        working-directory: js-abi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ~/.napi-rs
+            .cargo-cache
+            target/
+          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - uses: mlugg/setup-zig@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tool: cargo-zigbuild
+      - name: Install dependencies
+        run: yarn install
+      - name: Build
+        run: ${{ matrix.settings.build }}
+        shell: bash
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: ${{ github.workspace }}/dist/
+          if-no-files-found: error
+  test-macOS-windows-binding:
+    name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+          - host: macos-14
+            target: aarch64-apple-darwin
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+        node:
+          - '20'
+          - '22'
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        working-directory: js-abi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        run: yarn install
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: dist
+      - name: List packages
+        run: ls -R .
+        shell: bash
+      - name: Test bindings
+        run: yarn test
+  test-linux-binding:
+    name: Test ${{ matrix.target }} - node@${{ matrix.node }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+        node:
+          - '20'
+          - '22'
+    runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: js-abi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Output docker params
+        id: docker
+        run: |
+          node -e "
+            if ('${{ matrix.target }}'.startsWith('aarch64')) {
+              console.log('PLATFORM=linux/arm64')
+            } else if ('${{ matrix.target }}'.startsWith('armv7')) {
+              console.log('PLATFORM=linux/arm/v7')
+            } else {
+              console.log('PLATFORM=linux/amd64')
+            }
+          " >> "$GITHUB_OUTPUT"
+          node -e "
+            if ('${{ matrix.target }}'.endsWith('-musl')) {
+              console.log('IMAGE=node:${{ matrix.node }}-alpine')
+            } else {
+              console.log('IMAGE=node:${{ matrix.node }}-slim')
+            }
+          " >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: |
+          yarn config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
+          yarn config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
+          yarn install
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: dist
+      - name: List packages
+        run: ls -R .
+        shell: bash
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: ${{ contains(matrix.target, 'armv7') }}
+        with:
+          platforms: all
+      - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        if: ${{ contains(matrix.target, 'armv7') }}
+      - name: Docker Hub login
+        if: ${{ env.DOCKERHUB_USERNAME && env.DOCKERHUB_TOKEN }}
+        run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Test bindings
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ steps.docker.outputs.IMAGE }}
+          options: -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/js-abi --platform ${{ steps.docker.outputs.PLATFORM }}
+          run: yarn test
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    needs:
+      - lint
+      - test-macOS-windows-binding
+      - test-linux-binding
+    defaults:
+      run:
+        working-directory: js-abi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: yarn install
+      - name: create npm dirs
+        run: yarn napi create-npm-dirs
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: ${{ github.workspace }}/js-abi/artifacts
+      - name: Move artifacts
+        run: yarn artifacts
+      - name: List packages
+        run: ls -R ./npm
+        shell: bash
+      - name: Publish
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+        run: |
+          npm config set provenance true
+          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --access public
+          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --tag next --access public
+          else
+            echo "Not a release, skipping publish"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

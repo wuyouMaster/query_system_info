@@ -7,12 +7,12 @@
 //! - **macOS**: Uses `proc_listpidspath` and `lsof` style syscalls via libproc
 //! - **Windows**: Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from IP Helper API
 
-use crate::error::{Result, SysInfoError};
+use crate::error::Result;
 use crate::types::{
     SocketConnection, SocketConnectionEvent, SocketProtocol, SocketState, SocketStateSummary,
 };
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 
 /// Get all TCP connections (IPv4 and IPv6)
 pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
@@ -153,6 +153,18 @@ mod linux {
     };
     use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr as NetlinkSocketAddr};
     use std::fs;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const INODE_PID_CACHE_TTL: Duration = Duration::from_secs(1);
+
+    struct InodePidCache {
+        fetched_at: Instant,
+        map: HashMap<u64, u32>,
+    }
+
+    static INODE_PID_CACHE: OnceLock<Mutex<InodePidCache>> = OnceLock::new();
 
     /// TCP state mapping from kernel values to our enum
     fn tcp_state_from_kernel(state: u8) -> SocketState {
@@ -192,6 +204,7 @@ mod linux {
         proto_type: SocketProtocol,
     ) -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
+        let inode_pid_map = get_inode_pid_map_cached();
         let mut socket = Socket::new(NETLINK_SOCK_DIAG).unwrap();
         let _port_number = socket.bind_auto().unwrap().port_number();
         socket.connect(&NetlinkSocketAddr::new(0, 0)).unwrap();
@@ -267,7 +280,7 @@ mod linux {
                             local_addr,
                             remote_addr,
                             state,
-                            pid: None,
+                            pid: inode_pid_map.get(&(response.header.inode as u64)).copied(),
                             inode: response.header.inode as u64,
                         };
                         connections.entry(state).or_insert(Vec::new()).push(conn);
@@ -296,10 +309,11 @@ mod linux {
     fn parse_proc_tcp() -> Result<Vec<SocketConnection>> {
         let contents = fs::read_to_string("/proc/net/tcp")?;
         let mut connections = Vec::new();
+        let inode_pid_map = get_inode_pid_map_cached();
 
         for line in contents.lines().skip(1) {
             // Skip header
-            if let Some(conn) = parse_proc_net_line(line, SocketProtocol::TcpV4) {
+            if let Some(conn) = parse_proc_net_line(line, SocketProtocol::TcpV4, &inode_pid_map) {
                 connections.push(conn);
             }
         }
@@ -308,7 +322,11 @@ mod linux {
     }
 
     #[allow(dead_code)]
-    fn parse_proc_net_line(line: &str, protocol: SocketProtocol) -> Option<SocketConnection> {
+    fn parse_proc_net_line(
+        line: &str,
+        protocol: SocketProtocol,
+        inode_pid_map: &HashMap<u64, u32>,
+    ) -> Option<SocketConnection> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 10 {
             return None;
@@ -326,12 +344,13 @@ mod linux {
             None
         };
 
+        let pid = inode_pid_map.get(&inode).copied();
         Some(SocketConnection {
             protocol,
             local_addr: local,
             remote_addr,
             state: tcp_state_from_kernel(state),
-            pid: None,
+            pid,
             inode,
         })
     }
@@ -364,6 +383,73 @@ mod linux {
             None
         }
     }
+
+    fn get_inode_pid_map_cached() -> HashMap<u64, u32> {
+        let cache = INODE_PID_CACHE.get_or_init(|| {
+            Mutex::new(InodePidCache {
+                fetched_at: Instant::now() - INODE_PID_CACHE_TTL,
+                map: HashMap::new(),
+            })
+        });
+
+        if let Ok(mut cache_lock) = cache.lock() {
+            if cache_lock.fetched_at.elapsed() < INODE_PID_CACHE_TTL {
+                return cache_lock.map.clone();
+            }
+
+            let map = build_inode_pid_map();
+            cache_lock.fetched_at = Instant::now();
+            cache_lock.map = map.clone();
+            return map;
+        }
+
+        build_inode_pid_map()
+    }
+
+    fn build_inode_pid_map() -> HashMap<u64, u32> {
+        let mut map = HashMap::new();
+        let proc_root = Path::new("/proc");
+        let entries = match fs::read_dir(proc_root) {
+            Ok(entries) => entries,
+            Err(_) => return map,
+        };
+
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+            let pid: u32 = match name.parse() {
+                Ok(pid) => pid,
+                Err(_) => continue,
+            };
+
+            let fd_dir = proc_root.join(name.as_ref()).join("fd");
+            let fd_entries = match fs::read_dir(&fd_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            for fd_entry in fd_entries.flatten() {
+                let link = match fs::read_link(fd_entry.path()) {
+                    Ok(link) => link,
+                    Err(_) => continue,
+                };
+                if let Some(inode) = parse_socket_inode(&link) {
+                    map.entry(inode).or_insert(pid);
+                }
+            }
+        }
+
+        map
+    }
+
+    fn parse_socket_inode(path: &std::path::Path) -> Option<u64> {
+        let link = path.to_string_lossy();
+        if !link.starts_with("socket:[") || !link.ends_with(']') {
+            return None;
+        }
+        let inode_str = &link[8..link.len() - 1];
+        inode_str.parse().ok()
+    }
 }
 
 // ============================================================================
@@ -373,169 +459,237 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use std::process::Command;
+    use libproc::file_info::{pidfdinfo, ListFDs, ProcFDType};
+    use libproc::net_info::{SocketFDInfo, SocketInfoKind, TcpSIState};
+    use libproc::proc_pid::{listpidinfo, pidinfo};
+    use libproc::processes::{pids_by_type, ProcFilter};
+    use libproc::task_info::TaskAllInfo;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
-    // use the `netstat` command to get the status of the socket
+    const INI_IPV4: u8 = 1;
+    const INI_IPV6: u8 = 2;
+    const PID_SOCKET_CACHE_TTL: Duration = Duration::from_secs(1);
+
+    struct SocketCache {
+        fetched_at: Instant,
+        by_protocol: HashMap<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>,
+    }
+
+    static SOCKET_CACHE: OnceLock<Mutex<SocketCache>> = OnceLock::new();
 
     pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_connections_via_netstat(SocketProtocol::TcpV4, "tcp4")
+        Ok(get_connections_for_protocol(SocketProtocol::TcpV4))
     }
 
     pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_connections_via_netstat(SocketProtocol::TcpV6, "tcp6")
+        Ok(get_connections_for_protocol(SocketProtocol::TcpV6))
     }
 
     pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_connections_via_netstat(SocketProtocol::UdpV4, "udp4")
+        Ok(get_connections_for_protocol(SocketProtocol::UdpV4))
     }
 
     pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        get_connections_via_netstat(SocketProtocol::UdpV6, "udp6")
+        Ok(get_connections_for_protocol(SocketProtocol::UdpV6))
     }
 
-    pub fn get_connections_via_netstat(
+    fn get_connections_for_protocol(
         protocol: SocketProtocol,
-        proto_type: &str,
-    ) -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
-        let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-        let output = Command::new("netstat").arg("-anv").output()?;
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let lines = stdout.lines();
-        for line in lines {
-            let conn = match parse_netstat_line(line, protocol, proto_type) {
-                Some(conn) => conn,
-                None => continue,
-            };
-            connections
-                .entry(conn.state)
-                .or_insert(Vec::new())
-                .push(conn);
+    ) -> HashMap<SocketState, Vec<SocketConnection>> {
+        if let Some(all) = get_cached_all() {
+            return all.get(&protocol).cloned().unwrap_or_default();
         }
-        Ok(connections)
+
+        let all = scan_all_connections();
+        store_cached_all(&all);
+        all.get(&protocol).cloned().unwrap_or_default()
     }
 
-    fn parse_netstat_line(
-        line: &str,
-        protocol: SocketProtocol,
-        proto_type: &str,
-    ) -> Option<SocketConnection> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
+    fn get_cached_all(
+    ) -> Option<HashMap<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>> {
+        let cache = SOCKET_CACHE.get_or_init(|| {
+            Mutex::new(SocketCache {
+                fetched_at: Instant::now() - PID_SOCKET_CACHE_TTL,
+                by_protocol: HashMap::new(),
+            })
+        });
 
-        // netstat -anv format:
-        // Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
-        if parts.len() < 6 {
+        let cache_lock = cache.lock().ok()?;
+        if cache_lock.fetched_at.elapsed() >= PID_SOCKET_CACHE_TTL {
             return None;
         }
-
-        let local_str = parts[3];
-        let remote_str = parts[4];
-
-        let local_addr = parse_addr(local_str)?;
-        let remote_addr = parse_addr(remote_str);
-        let state = parse_state(parts[5]);
-
-        match proto_type {
-            "tcp4" => {
-                if parts[0] != "tcp4" {
-                    return None;
-                }
-            }
-            "tcp6" => {
-                if parts[0] != "tcp6" {
-                    return None;
-                }
-            }
-            "udp4" => {
-                if parts[0] != "udp4" {
-                    return None;
-                }
-            }
-            "udp6" => {
-                if parts[0] != "udp6" {
-                    return None;
-                }
-            }
-            _ => {
-                return None;
-            }
-        }
-
-        Some(SocketConnection {
-            protocol,
-            local_addr,
-            remote_addr,
-            state,
-            pid: None,
-            inode: 0,
-        })
+        Some(cache_lock.by_protocol.clone())
     }
 
-    fn parse_addr(s: &str) -> Option<SocketAddr> {
-        // Handle formats like:
-        // 127.0.0.1.8080 (IPv4)
-        // *.* (wildcard)
-        // fe80::1%lo0.8080 (IPv6 with scope)
+    fn store_cached_all(
+        by_protocol: &HashMap<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>,
+    ) {
+        let cache = SOCKET_CACHE.get_or_init(|| {
+            Mutex::new(SocketCache {
+                fetched_at: Instant::now() - PID_SOCKET_CACHE_TTL,
+                by_protocol: HashMap::new(),
+            })
+        });
 
-        if s == "*.*" {
-            return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+        if let Ok(mut cache_lock) = cache.lock() {
+            cache_lock.fetched_at = Instant::now();
+            cache_lock.by_protocol = by_protocol.clone();
         }
+    }
 
-        // Find the last dot which separates port
-        if let Some(last_dot) = s.rfind('.') {
-            let addr_part = &s[..last_dot];
-            let port_part = &s[last_dot + 1..];
+    fn scan_all_connections() -> HashMap<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>
+    {
+        let mut by_protocol =
+            HashMap::<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>::new();
+        let pids = match pids_by_type(ProcFilter::All) {
+            Ok(pids) => pids,
+            Err(_) => return by_protocol,
+        };
 
-            let port: u16 = if port_part == "*" {
-                0
-            } else {
-                port_part.parse().ok()?
+        for pid in pids {
+            let pid_i32 = pid as i32;
+            let task_info = match pidinfo::<TaskAllInfo>(pid_i32, 0) {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
+            let fd_count = task_info.pbsd.pbi_nfiles as usize;
+            let fds = match listpidinfo::<ListFDs>(pid_i32, fd_count) {
+                Ok(fds) => fds,
+                Err(_) => continue,
             };
 
-            // Try parsing as IPv4
-            if let Ok(ip) = addr_part.parse::<Ipv4Addr>() {
-                return Some(SocketAddr::new(IpAddr::V4(ip), port));
-            }
-
-            // Handle macOS IPv4 format: a.b.c.d.port -> need to rejoin
-            let parts: Vec<&str> = s.split('.').collect();
-            if parts.len() >= 5 {
-                // IPv4 has 4 octets + port
-                let ip_str = parts[..4].join(".");
-                if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-                    let port: u16 = parts[4].parse().unwrap_or(0);
-                    return Some(SocketAddr::new(IpAddr::V4(ip), port));
+            for fd in fds {
+                if !matches!(ProcFDType::from(fd.proc_fdtype), ProcFDType::Socket) {
+                    continue;
                 }
-            }
+                let sock = match pidfdinfo::<SocketFDInfo>(pid_i32, fd.proc_fd) {
+                    Ok(sock) => sock,
+                    Err(_) => continue,
+                };
 
-            // Try IPv6
-            // Remove scope identifier if present
-            let addr_clean = addr_part.split('%').next().unwrap_or(addr_part);
-            if let Ok(ip) = addr_clean.parse::<Ipv6Addr>() {
-                return Some(SocketAddr::new(IpAddr::V6(ip), port));
+                let conn = match socket_info_to_connection_any(pid, &sock) {
+                    Some(conn) => conn,
+                    None => continue,
+                };
+                by_protocol
+                    .entry(conn.protocol)
+                    .or_default()
+                    .entry(conn.state)
+                    .or_default()
+                    .push(conn);
             }
         }
 
-        // Try standard socket address parsing
-        if let Ok(addr) = s.parse::<SocketAddr>() {
-            return Some(addr);
+        by_protocol
+    }
+
+    fn socket_info_to_connection_any(pid: u32, socket: &SocketFDInfo) -> Option<SocketConnection> {
+        let kind = SocketInfoKind::from(socket.psi.soi_kind);
+        let proto = socket.psi.soi_protocol;
+
+        if matches!(kind, SocketInfoKind::Tcp) && proto == libc::IPPROTO_TCP {
+            let info = unsafe { socket.psi.soi_proto.pri_tcp };
+            let protocol = match info.tcpsi_ini.insi_vflag {
+                INI_IPV4 => SocketProtocol::TcpV4,
+                INI_IPV6 => SocketProtocol::TcpV6,
+                _ => return None,
+            };
+            let (local_addr, remote_addr) = parse_in_sock_info(protocol, &info.tcpsi_ini)?;
+            let state = tcp_state_from_macos(info.tcpsi_state);
+            return Some(SocketConnection {
+                protocol,
+                local_addr,
+                remote_addr,
+                state,
+                pid: Some(pid),
+                inode: 0,
+            });
+        }
+
+        if matches!(kind, SocketInfoKind::In) && proto == libc::IPPROTO_UDP {
+            let info = unsafe { socket.psi.soi_proto.pri_in };
+            let protocol = match info.insi_vflag {
+                INI_IPV4 => SocketProtocol::UdpV4,
+                INI_IPV6 => SocketProtocol::UdpV6,
+                _ => return None,
+            };
+            let (local_addr, _remote_addr) = parse_in_sock_info(protocol, &info)?;
+            return Some(SocketConnection {
+                protocol,
+                local_addr,
+                remote_addr: None,
+                state: SocketState::Unknown,
+                pid: Some(pid),
+                inode: 0,
+            });
         }
 
         None
     }
 
-    fn parse_state(s: &str) -> SocketState {
-        match s.to_uppercase().as_str() {
-            "ESTABLISHED" => SocketState::Established,
-            "SYN_SENT" => SocketState::SynSent,
-            "SYN_RECEIVED" | "SYN_RECV" => SocketState::SynReceived,
-            "FIN_WAIT_1" | "FIN_WAIT1" => SocketState::FinWait1,
-            "FIN_WAIT_2" | "FIN_WAIT2" => SocketState::FinWait2,
-            "TIME_WAIT" => SocketState::TimeWait,
-            "CLOSED" => SocketState::Closed,
-            "CLOSE_WAIT" => SocketState::CloseWait,
-            "LAST_ACK" => SocketState::LastAck,
-            "LISTEN" => SocketState::Listen,
-            "CLOSING" => SocketState::Closing,
+    fn parse_in_sock_info(
+        protocol: SocketProtocol,
+        info: &libproc::net_info::InSockInfo,
+    ) -> Option<(SocketAddr, Option<SocketAddr>)> {
+        match protocol {
+            SocketProtocol::TcpV4 | SocketProtocol::UdpV4 => {
+                if info.insi_vflag != INI_IPV4 {
+                    return None;
+                }
+                let local_ip = unsafe {
+                    Ipv4Addr::from(u32::from_be(info.insi_laddr.ina_46.i46a_addr4.s_addr))
+                };
+                let remote_ip = unsafe {
+                    Ipv4Addr::from(u32::from_be(info.insi_faddr.ina_46.i46a_addr4.s_addr))
+                };
+                let local_port = u16::from_be(info.insi_lport as u16);
+                let remote_port = u16::from_be(info.insi_fport as u16);
+                let local_addr = SocketAddr::new(IpAddr::V4(local_ip), local_port);
+                let remote_addr = if remote_port == 0 {
+                    None
+                } else {
+                    Some(SocketAddr::new(IpAddr::V4(remote_ip), remote_port))
+                };
+                Some((local_addr, remote_addr))
+            }
+            SocketProtocol::TcpV6 | SocketProtocol::UdpV6 => {
+                if info.insi_vflag != INI_IPV6 {
+                    return None;
+                }
+                let local_ip = unsafe { ipv6_from_in6_addr(info.insi_laddr.ina_6) };
+                let remote_ip = unsafe { ipv6_from_in6_addr(info.insi_faddr.ina_6) };
+                let local_port = u16::from_be(info.insi_lport as u16);
+                let remote_port = u16::from_be(info.insi_fport as u16);
+                let local_addr = SocketAddr::new(IpAddr::V6(local_ip), local_port);
+                let remote_addr = if remote_port == 0 {
+                    None
+                } else {
+                    Some(SocketAddr::new(IpAddr::V6(remote_ip), remote_port))
+                };
+                Some((local_addr, remote_addr))
+            }
+        }
+    }
+
+    fn ipv6_from_in6_addr(addr: libc::in6_addr) -> Ipv6Addr {
+        Ipv6Addr::from(addr.s6_addr)
+    }
+
+    fn tcp_state_from_macos(state: i32) -> SocketState {
+        match TcpSIState::from(state) {
+            TcpSIState::Closed => SocketState::Closed,
+            TcpSIState::Listen => SocketState::Listen,
+            TcpSIState::SynSent => SocketState::SynSent,
+            TcpSIState::SynReceived => SocketState::SynReceived,
+            TcpSIState::Established => SocketState::Established,
+            TcpSIState::CloseWait => SocketState::CloseWait,
+            TcpSIState::FinWait1 => SocketState::FinWait1,
+            TcpSIState::Closing => SocketState::Closing,
+            TcpSIState::LastAck => SocketState::LastAck,
+            TcpSIState::FinWait2 => SocketState::FinWait2,
+            TcpSIState::TimeWait => SocketState::TimeWait,
             _ => SocketState::Unknown,
         }
     }

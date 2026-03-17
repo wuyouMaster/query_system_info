@@ -19,7 +19,35 @@ permissions:
   contents: read
 
 jobs:
+  resolve-tag:
+    name: Resolve latest tag
+    runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.tags.outputs.latest_tag }}
+      is_latest: ${{ steps.tags.outputs.is_latest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine latest tag
+        id: tags
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "latest_tag=" >> "$GITHUB_OUTPUT"
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest_tag=$(git tag --sort=-v:refname | head -n 1)
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_NAME}" = "${latest_tag}" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_latest=false" >> "$GITHUB_OUTPUT"
+          fi
   linux:
+    needs: resolve-tag
+    if: ${{ needs.resolve-tag.outputs.is_latest == 'true' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -50,6 +78,8 @@ jobs:
           path: dist
 
   musllinux:
+    needs: resolve-tag
+    if: ${{ needs.resolve-tag.outputs.is_latest == 'true' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -82,6 +112,8 @@ jobs:
           path: dist
 
   windows:
+    needs: resolve-tag
+    if: ${{ needs.resolve-tag.outputs.is_latest == 'true' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -107,6 +139,8 @@ jobs:
           path: dist
 
   macos:
+    needs: resolve-tag
+    if: ${{ needs.resolve-tag.outputs.is_latest == 'true' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -136,8 +170,8 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
-    needs: [linux, musllinux, windows, macos]
+    needs: [resolve-tag, linux, musllinux, windows, macos]
+    if: ${{ needs.resolve-tag.outputs.is_latest == 'true' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
     permissions:
       # Use to sign the release artifacts
       id-token: write

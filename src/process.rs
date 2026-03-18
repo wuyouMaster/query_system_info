@@ -422,6 +422,8 @@ mod macos {
     use libc::{
         c_int, c_void, sysctl, CTL_KERN, KERN_PROC, KERN_PROCARGS2, KERN_PROC_ALL, KERN_PROC_PID,
     };
+    use libproc::proc_pid::pidinfo;
+    use libproc::task_info::TaskAllInfo;
     use std::mem;
     use std::ptr;
 
@@ -657,6 +659,7 @@ mod macos {
 
         let pid = kp.kp_proc.p_pid as u32;
         let (exe_path, cmdline) = get_process_args(pid);
+        let (memory_bytes, virtual_memory) = get_task_memory(pid as i32);
 
         ProcessInfo {
             pid,
@@ -665,13 +668,23 @@ mod macos {
             exe_path,
             cmdline,
             state,
-            memory_bytes: 0,
-            virtual_memory: 0,
+            memory_bytes,
+            virtual_memory,
             cpu_percent: 0.0,
             threads: 0,
             start_time: kp.kp_proc.p_starttime.tv_sec as u64,
             uid: kp.kp_eproc.e_ucred.cr_uid,
             username: String::new(),
+        }
+    }
+
+    fn get_task_memory(pid: i32) -> (u64, u64) {
+        match pidinfo::<TaskAllInfo>(pid, 0) {
+            Ok(info) => (
+                info.ptinfo.pti_resident_size as u64,
+                info.ptinfo.pti_virtual_size as u64,
+            ),
+            Err(_) => (0, 0),
         }
     }
 

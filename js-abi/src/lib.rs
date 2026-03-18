@@ -3,7 +3,7 @@ use napi_derive::napi;
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::{ProcessTracker, list_processes};
+use query_system_info::process::{ProcessSocketTracker, ProcessTracker, list_processes};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -84,9 +84,25 @@ pub struct JsChildProcessEvent {
     pub start_time: f64,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsSocketConnectionEvent {
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub state: String,
+    pub pid: f64,
+    pub inode: f64,
+}
+
 #[napi]
 pub struct JsProcessTracker {
     tracker: Arc<Mutex<Option<ProcessTracker>>>,
+}
+
+#[napi]
+pub struct JsProcessSocketTracker {
+    tracker: Arc<Mutex<Option<ProcessSocketTracker>>>,
 }
 
 #[napi]
@@ -537,6 +553,18 @@ impl JsProcessTracker {
 }
 
 #[napi]
+impl JsProcessSocketTracker {
+    #[napi]
+    pub fn stop(&self) {
+        if let Ok(mut tracker) = self.tracker.lock() {
+            if let Some(t) = tracker.take() {
+                t.stop();
+            }
+        }
+    }
+}
+
+#[napi]
 pub fn start_tracking_children(
     pid: f64,
     callback: ThreadsafeFunction<JsChildProcessEvent>,
@@ -557,6 +585,31 @@ pub fn start_tracking_children(
     )?;
 
     Ok(JsProcessTracker {
+        tracker: Arc::new(Mutex::new(Some(tracker))),
+    })
+}
+
+#[napi]
+pub fn start_tracking_sockets(
+    pid: f64,
+    callback: ThreadsafeFunction<JsSocketConnectionEvent>,
+) -> napi::Result<JsProcessSocketTracker> {
+    let tracker = into_napi_result(
+        query_system_info::process::start_tracking_sockets(pid as u32, move |event| {
+            let js_event = JsSocketConnectionEvent {
+                protocol: event.protocol.to_string(),
+                local_addr: event.local_addr.to_string(),
+                remote_addr: event.remote_addr.map(|addr| addr.to_string()),
+                state: event.state.to_string(),
+                pid: event.pid as f64,
+                inode: event.inode as f64,
+            };
+            callback.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
+        }),
+        "start_tracking_sockets failed",
+    )?;
+
+    Ok(JsProcessSocketTracker {
         tracker: Arc::new(Mutex::new(Some(tracker))),
     })
 }

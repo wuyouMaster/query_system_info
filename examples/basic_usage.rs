@@ -161,5 +161,23 @@ fn main() -> query_system_info::Result<()> {
             println!("item: {:?}", item);
         }
     }
+
+    // ========================================
+    // Socket Tracking (by PID)
+    // ========================================
+    println!("\n--- Socket Tracking (Current Process) ---");
+    let socket_tracker = process::start_tracking_sockets(std::process::id(), |event| {
+        println!(
+            "socket: {} {} -> {:?} [{}] pid={} inode={}",
+            event.protocol,
+            event.local_addr,
+            event.remote_addr,
+            event.state,
+            event.pid,
+            event.inode
+        );
+    })?;
+    std::thread::sleep(Duration::from_millis(500));
+    socket_tracker.stop();
     Ok(())
 }

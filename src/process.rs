@@ -4,11 +4,17 @@
 
 use crate::error::{Result, SysInfoError};
 use crate::socket;
-use crate::types::{ChildProcessEvent, ProcessInfo, ProcessState, SocketConnectionEvent};
+use crate::types::{
+    ChildProcessEvent, ProcessInfo, ProcessState, SocketConnectionEvent, SocketProtocol,
+    SocketState,
+};
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+type ConnectionKey = (u64, SocketProtocol, SocketAddr, Option<SocketAddr>, SocketState);
 
 /// List all processes
 pub fn list_processes() -> Result<Vec<ProcessInfo>> {
@@ -47,7 +53,7 @@ struct TrackerState {
 struct SocketTrackerState {
     pid: u32,
     running: bool,
-    known_inodes: HashSet<u64>,
+    known_connections: HashSet<ConnectionKey>,
     callback: Box<dyn Fn(SocketConnectionEvent) + Send + 'static>,
 }
 
@@ -79,7 +85,7 @@ where
     let state = Arc::new(Mutex::new(SocketTrackerState {
         pid,
         running: true,
-        known_inodes: HashSet::new(),
+        known_connections: HashSet::new(),
         callback: Box::new(callback),
     }));
 
@@ -148,7 +154,14 @@ fn socket_track_loop(state: Arc<Mutex<SocketTrackerState>>) {
         if let Ok(connections) = socket::get_connections_by_pid(pid) {
             let mut state_lock = state.lock().unwrap();
             for conn in connections {
-                if state_lock.known_inodes.insert(conn.inode) {
+                let key = (
+                    conn.inode,
+                    conn.protocol,
+                    conn.local_addr,
+                    conn.remote_addr,
+                    conn.state,
+                );
+                if state_lock.known_connections.insert(key) {
                     (state_lock.callback)(conn);
                 }
             }

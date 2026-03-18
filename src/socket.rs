@@ -17,24 +17,36 @@ use std::net::SocketAddr;
 /// Get all TCP connections (IPv4 and IPv6)
 pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
     let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-    connections.extend(get_tcp4_connections()?);
-    connections.extend(get_tcp6_connections()?);
+    for (state, conns) in get_tcp4_connections()? {
+        connections.entry(state).or_default().extend(conns);
+    }
+    for (state, conns) in get_tcp6_connections()? {
+        connections.entry(state).or_default().extend(conns);
+    }
     Ok(connections)
 }
 
 /// Get all UDP sockets (IPv4 and IPv6)
 pub fn get_udp_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
     let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-    connections.extend(get_udp4_sockets()?.into_iter());
-    connections.extend(get_udp6_sockets()?.into_iter());
+    for (state, conns) in get_udp4_sockets()? {
+        connections.entry(state).or_default().extend(conns);
+    }
+    for (state, conns) in get_udp6_sockets()? {
+        connections.entry(state).or_default().extend(conns);
+    }
     Ok(connections)
 }
 
 /// Get all socket connections (TCP and UDP)
 pub fn get_all_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
     let mut connections = HashMap::<SocketState, Vec<SocketConnection>>::new();
-    connections.extend(get_tcp_connections()?);
-    connections.extend(get_udp_sockets()?);
+    for (state, conns) in get_tcp_connections()? {
+        connections.entry(state).or_default().extend(conns);
+    }
+    for (state, conns) in get_udp_sockets()? {
+        connections.entry(state).or_default().extend(conns);
+    }
     Ok(connections)
 }
 
@@ -543,6 +555,9 @@ mod macos {
     {
         let mut by_protocol =
             HashMap::<SocketProtocol, HashMap<SocketState, Vec<SocketConnection>>>::new();
+        let debug_pid = std::env::var("DEBUG_SOCKET_PID")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
         let pids = match pids_by_type(ProcFilter::All) {
             Ok(pids) => pids,
             Err(_) => return by_protocol,
@@ -573,6 +588,12 @@ mod macos {
                     Some(conn) => conn,
                     None => continue,
                 };
+                match debug_pid {
+                    Some(target_pid) => if pid == target_pid {
+                        println!("conn: {:?}", conn);
+                    }
+                    None => {}
+                }
                 by_protocol
                     .entry(conn.protocol)
                     .or_default()
@@ -588,14 +609,11 @@ mod macos {
     fn socket_info_to_connection_any(pid: u32, socket: &SocketFDInfo) -> Option<SocketConnection> {
         let kind = SocketInfoKind::from(socket.psi.soi_kind);
         let proto = socket.psi.soi_protocol;
+        let family = socket.psi.soi_family;
 
-        if matches!(kind, SocketInfoKind::Tcp) && proto == libc::IPPROTO_TCP {
+        if matches!(kind, SocketInfoKind::Tcp) && (proto == libc::IPPROTO_TCP || proto == 0) {
             let info = unsafe { socket.psi.soi_proto.pri_tcp };
-            let protocol = match info.tcpsi_ini.insi_vflag {
-                INI_IPV4 => SocketProtocol::TcpV4,
-                INI_IPV6 => SocketProtocol::TcpV6,
-                _ => return None,
-            };
+            let protocol = protocol_from_vflag_or_family(info.tcpsi_ini.insi_vflag, family, true)?;
             let (local_addr, remote_addr) = parse_in_sock_info(protocol, &info.tcpsi_ini)?;
             let state = tcp_state_from_macos(info.tcpsi_state);
             return Some(SocketConnection {
@@ -608,18 +626,28 @@ mod macos {
             });
         }
 
-        if matches!(kind, SocketInfoKind::In) && proto == libc::IPPROTO_UDP {
+        if matches!(kind, SocketInfoKind::In) && (proto == libc::IPPROTO_UDP || proto == 0) {
             let info = unsafe { socket.psi.soi_proto.pri_in };
-            let protocol = match info.insi_vflag {
-                INI_IPV4 => SocketProtocol::UdpV4,
-                INI_IPV6 => SocketProtocol::UdpV6,
-                _ => return None,
-            };
+            let protocol = protocol_from_vflag_or_family(info.insi_vflag, family, false)?;
             let (local_addr, _remote_addr) = parse_in_sock_info(protocol, &info)?;
             return Some(SocketConnection {
                 protocol,
                 local_addr,
                 remote_addr: None,
+                state: SocketState::Unknown,
+                pid: Some(pid),
+                inode: 0,
+            });
+        }
+
+        if matches!(kind, SocketInfoKind::In) && (proto == libc::IPPROTO_TCP || proto == 0) {
+            let info = unsafe { socket.psi.soi_proto.pri_in };
+            let protocol = protocol_from_vflag_or_family(info.insi_vflag, family, true)?;
+            let (local_addr, remote_addr) = parse_in_sock_info(protocol, &info)?;
+            return Some(SocketConnection {
+                protocol,
+                local_addr,
+                remote_addr,
                 state: SocketState::Unknown,
                 pid: Some(pid),
                 inode: 0,
@@ -636,7 +664,9 @@ mod macos {
         match protocol {
             SocketProtocol::TcpV4 | SocketProtocol::UdpV4 => {
                 if info.insi_vflag != INI_IPV4 {
-                    return None;
+                    if info.insi_vflag != 0 {
+                        return None;
+                    }
                 }
                 let local_ip = unsafe {
                     Ipv4Addr::from(u32::from_be(info.insi_laddr.ina_46.i46a_addr4.s_addr))
@@ -656,7 +686,9 @@ mod macos {
             }
             SocketProtocol::TcpV6 | SocketProtocol::UdpV6 => {
                 if info.insi_vflag != INI_IPV6 {
-                    return None;
+                    if info.insi_vflag != 0 {
+                        return None;
+                    }
                 }
                 let local_ip = unsafe { ipv6_from_in6_addr(info.insi_laddr.ina_6) };
                 let remote_ip = unsafe { ipv6_from_in6_addr(info.insi_faddr.ina_6) };
@@ -675,6 +707,44 @@ mod macos {
 
     fn ipv6_from_in6_addr(addr: libc::in6_addr) -> Ipv6Addr {
         Ipv6Addr::from(addr.s6_addr)
+    }
+
+    fn protocol_from_vflag_or_family(
+        vflag: u8,
+        family: i32,
+        is_tcp: bool,
+    ) -> Option<SocketProtocol> {
+        match vflag {
+            INI_IPV4 => {
+                return Some(if is_tcp {
+                    SocketProtocol::TcpV4
+                } else {
+                    SocketProtocol::UdpV4
+                })
+            }
+            INI_IPV6 => {
+                return Some(if is_tcp {
+                    SocketProtocol::TcpV6
+                } else {
+                    SocketProtocol::UdpV6
+                })
+            }
+            _ => {}
+        }
+
+        match family {
+            libc::AF_INET => Some(if is_tcp {
+                SocketProtocol::TcpV4
+            } else {
+                SocketProtocol::UdpV4
+            }),
+            libc::AF_INET6 => Some(if is_tcp {
+                SocketProtocol::TcpV6
+            } else {
+                SocketProtocol::UdpV6
+            }),
+            _ => None,
+        }
     }
 
     fn tcp_state_from_macos(state: i32) -> SocketState {

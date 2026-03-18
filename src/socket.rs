@@ -589,8 +589,10 @@ mod macos {
                     None => continue,
                 };
                 match debug_pid {
-                    Some(target_pid) => if pid == target_pid {
-                        println!("conn: {:?}", conn);
+                    Some(target_pid) => {
+                        if pid == target_pid {
+                            println!("conn: {:?}", conn);
+                        }
                     }
                     None => {}
                 }

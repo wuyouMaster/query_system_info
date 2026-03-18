@@ -14,7 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-type ConnectionKey = (u64, SocketProtocol, SocketAddr, Option<SocketAddr>, SocketState);
+type ConnectionKey = (
+    u64,
+    SocketProtocol,
+    SocketAddr,
+    Option<SocketAddr>,
+    SocketState,
+);
 
 /// List all processes
 pub fn list_processes() -> Result<Vec<ProcessInfo>> {

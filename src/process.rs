@@ -5,8 +5,8 @@
 use crate::error::{Result, SysInfoError};
 use crate::socket;
 use crate::types::{
-    ChildProcessEvent, ProcessInfo, ProcessState, SocketConnectionEvent, SocketProtocol,
-    SocketState,
+    ChildProcessEvent, ProcessInfo, ProcessIoStats, ProcessState, SocketConnectionEvent,
+    SocketProtocol, SocketState,
 };
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -242,6 +242,23 @@ pub fn get_process_info(pid: u32) -> Result<ProcessInfo> {
     ))
 }
 
+/// Get I/O statistics for a specific process
+pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
+    #[cfg(target_os = "linux")]
+    return linux::get_process_io(pid);
+
+    #[cfg(target_os = "macos")]
+    return macos::get_process_io(pid);
+
+    #[cfg(target_os = "windows")]
+    return innerWindows::get_process_io(pid);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
+}
+
 // ============================================================================
 // Linux Implementation
 // ============================================================================
@@ -409,6 +426,36 @@ mod linux {
                 _ => {}
             }
         }
+    }
+
+    pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
+        let io_path = format!("/proc/{}/io", pid);
+        let content =
+            fs::read_to_string(&io_path).map_err(|_| SysInfoError::ProcessNotFound(pid))?;
+
+        let mut stats = ProcessIoStats {
+            pid,
+            ..Default::default()
+        };
+
+        for line in content.lines() {
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            let value: u64 = parts[1].parse().unwrap_or(0);
+            match parts[0] {
+                "rchar" => stats.read_chars = value,
+                "wchar" => stats.write_chars = value,
+                "syscr" => stats.read_ops = value,
+                "syscw" => stats.write_ops = value,
+                "read_bytes" => stats.read_bytes = value,
+                "write_bytes" => stats.write_bytes = value,
+                _ => {}
+            }
+        }
+
+        Ok(stats)
     }
 }
 
@@ -721,6 +768,21 @@ mod macos {
         }
     }
 
+    pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
+        match pidrusage::<RUsageInfoV2>(pid as i32) {
+            Ok(info) => Ok(ProcessIoStats {
+                pid,
+                read_bytes: info.ri_diskio_bytesread as u64,
+                write_bytes: info.ri_diskio_byteswritten as u64,
+                read_chars: 0,
+                write_chars: 0,
+                read_ops: 0,
+                write_ops: 0,
+            }),
+            Err(_) => Err(SysInfoError::ProcessNotFound(pid)),
+        }
+    }
+
     fn get_process_args(pid: u32) -> (String, Vec<String>) {
         let mut mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
         let mut size: usize = 0;
@@ -947,6 +1009,34 @@ mod innerWindows {
             unsafe {
                 CloseHandle(self.0).ok();
             }
+        }
+    }
+
+    pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
+        use windows::Win32::System::Threading::{
+            GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).map_err(|_| {
+                SysInfoError::PermissionDenied(format!("Cannot open process {pid} for IO query"))
+            })?;
+            let _guard = HandleGuard(handle);
+
+            let mut io_counters: IO_COUNTERS = mem::zeroed();
+            GetProcessIoCounters(handle, &mut io_counters).map_err(|e| {
+                SysInfoError::WindowsApi(format!("GetProcessIoCounters({pid}) failed: {e}"))
+            })?;
+
+            Ok(ProcessIoStats {
+                pid,
+                read_bytes: io_counters.ReadTransferCount,
+                write_bytes: io_counters.WriteTransferCount,
+                read_chars: 0,
+                write_chars: 0,
+                read_ops: io_counters.ReadOperationCount,
+                write_ops: io_counters.WriteOperationCount,
+            })
         }
     }
 }

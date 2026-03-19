@@ -100,6 +100,25 @@ pub struct ProcessInfo {
     pub username: String,
 }
 
+/// Per-process I/O statistics
+#[derive(Debug, Clone, Default)]
+pub struct ProcessIoStats {
+    /// Process ID
+    pub pid: u32,
+    /// Bytes read from disk (actual storage reads, excluding page cache)
+    pub read_bytes: u64,
+    /// Bytes written to disk (actual storage writes, excluding page cache)
+    pub write_bytes: u64,
+    /// Total bytes read (including cached reads)
+    pub read_chars: u64,
+    /// Total bytes written (including cached writes)
+    pub write_chars: u64,
+    /// Number of read I/O operations
+    pub read_ops: u64,
+    /// Number of write I/O operations
+    pub write_ops: u64,
+}
+
 /// Process state
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ProcessState {

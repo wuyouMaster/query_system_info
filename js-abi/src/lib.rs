@@ -3,7 +3,9 @@ use napi_derive::napi;
 use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
-use query_system_info::process::{ProcessSocketTracker, ProcessTracker, list_processes};
+use query_system_info::process::{
+    ProcessSocketTracker, ProcessTracker, get_process_io, list_processes,
+};
 use query_system_info::socket::{get_all_connections, get_socket_summary};
 use query_system_info::types::SocketState;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -82,6 +84,18 @@ pub struct JsChildProcessEvent {
     pub cmdline: Vec<String>,
     pub exe_path: String,
     pub start_time: f64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsProcessIoInfo {
+    pub pid: f64,
+    pub read_bytes: f64,
+    pub write_bytes: f64,
+    pub read_chars: f64,
+    pub write_chars: f64,
+    pub read_ops: f64,
+    pub write_ops: f64,
 }
 
 #[napi(object)]
@@ -422,6 +436,23 @@ pub fn get_process_by_pid(pid: f64) -> Option<JsProcessInfo> {
     let processes = list_processes().ok()?;
     let result = processes.iter().find(|p| p.pid == pid as u32)?.clone();
     Some(to_js_process_info(&result))
+}
+
+#[napi]
+pub fn js_get_process_io(pid: f64) -> napi::Result<JsProcessIoInfo> {
+    let stats = into_napi_result(
+        get_process_io(pid as u32),
+        &format!("get_process_io({pid}) failed"),
+    )?;
+    Ok(JsProcessIoInfo {
+        pid: stats.pid as f64,
+        read_bytes: stats.read_bytes as f64,
+        write_bytes: stats.write_bytes as f64,
+        read_chars: stats.read_chars as f64,
+        write_chars: stats.write_chars as f64,
+        read_ops: stats.read_ops as f64,
+        write_ops: stats.write_ops as f64,
+    })
 }
 
 #[napi]

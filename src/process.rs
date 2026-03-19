@@ -422,8 +422,9 @@ mod macos {
     use libc::{
         c_int, c_void, sysctl, CTL_KERN, KERN_PROC, KERN_PROCARGS2, KERN_PROC_ALL, KERN_PROC_PID,
     };
+    use libproc::pid_rusage::{pidrusage, RUsageInfoV2};
     use libproc::proc_pid::pidinfo;
-    use libproc::task_info::TaskAllInfo;
+    use libproc::task_info::{TaskAllInfo, TaskInfo};
     use std::mem;
     use std::ptr;
 
@@ -659,7 +660,25 @@ mod macos {
 
         let pid = kp.kp_proc.p_pid as u32;
         let (exe_path, cmdline) = get_process_args(pid);
-        let (memory_bytes, virtual_memory) = get_task_memory(pid as i32);
+        let (rss, phys_footprint, _phys_virt) = get_pid_rusage(pid as i32);
+        let (task_rss, virtual_memory) = get_task_memory(pid as i32);
+
+        let memory_bytes = if phys_footprint > 0 {
+            phys_footprint
+        } else if rss > 0 {
+            rss
+        } else if task_rss > 0 {
+            task_rss
+        } else {
+            let rss_pages = i64::from(kp.kp_eproc.e_xrssize).max(0) as u64;
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 };
+            rss_pages.saturating_mul(page_size)
+        };
+        let virtual_memory = if virtual_memory > 0 {
+            virtual_memory
+        } else {
+            _phys_virt
+        };
 
         ProcessInfo {
             pid,
@@ -679,12 +698,26 @@ mod macos {
     }
 
     fn get_task_memory(pid: i32) -> (u64, u64) {
+        if let Ok(info) = pidinfo::<TaskInfo>(pid, 0) {
+            return (info.pti_resident_size as u64, info.pti_virtual_size as u64);
+        }
         match pidinfo::<TaskAllInfo>(pid, 0) {
             Ok(info) => (
                 info.ptinfo.pti_resident_size as u64,
                 info.ptinfo.pti_virtual_size as u64,
             ),
             Err(_) => (0, 0),
+        }
+    }
+
+    fn get_pid_rusage(pid: i32) -> (u64, u64, u64) {
+        match pidrusage::<RUsageInfoV2>(pid) {
+            Ok(info) => (
+                info.ri_resident_size as u64,
+                info.ri_phys_footprint as u64,
+                0,
+            ),
+            Err(_) => (0, 0, 0),
         }
     }
 

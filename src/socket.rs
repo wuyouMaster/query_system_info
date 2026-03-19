@@ -12,7 +12,6 @@ use crate::types::{
     SocketConnection, SocketConnectionEvent, SocketProtocol, SocketState, SocketStateSummary,
 };
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 /// Get all TCP connections (IPv4 and IPv6)
 pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {

@@ -257,59 +257,147 @@ mod macos {
     }
 
     pub fn get_disk_io_stats() -> Result<Vec<DiskIoStats>> {
-        // On macOS, disk I/O stats require IOKit framework
-        // This is a simplified implementation using system_profiler or iostat
-        // For production use, you'd want to use IOKit directly
+        use std::ffi::CString;
+        use std::ptr;
 
-        use std::process::Command;
-
-        let output = Command::new("iostat")
-            .args(["-d", "-c", "1"])
-            .output()
-            .map_err(|e| SysInfoError::SysCall(format!("iostat failed: {}", e)))?;
-
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        let mut stats = Vec::new();
-
-        let lines: Vec<&str> = output_str.lines().collect();
-        if lines.len() < 3 {
-            return Ok(stats);
+        #[link(name = "IOKit", kind = "framework")]
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn IOServiceMatching(name: *const libc::c_char) -> *mut libc::c_void;
+            fn IOServiceGetMatchingServices(
+                main_port: u32,
+                matching: *mut libc::c_void,
+                existing: *mut u32,
+            ) -> i32;
+            fn IOIteratorNext(iterator: u32) -> u32;
+            fn IOObjectRelease(obj: u32) -> i32;
+            fn IORegistryEntryCreateCFProperties(
+                entry: u32,
+                properties: *mut *mut libc::c_void,
+                allocator: *const libc::c_void,
+                options: u32,
+            ) -> i32;
+            fn CFDictionaryGetValue(
+                dict: *const libc::c_void,
+                key: *const libc::c_void,
+            ) -> *const libc::c_void;
+            fn CFNumberGetValue(
+                number: *const libc::c_void,
+                the_type: i32,
+                value_ptr: *mut libc::c_void,
+            ) -> u8;
+            fn CFStringCreateWithCString(
+                alloc: *const libc::c_void,
+                cstr: *const libc::c_char,
+                encoding: u32,
+            ) -> *mut libc::c_void;
+            fn CFRelease(cf: *const libc::c_void);
         }
 
-        // Parse iostat output
-        // Header line contains device names
-        let header = lines.get(0).unwrap_or(&"");
-        let devices: Vec<&str> = header.split_whitespace().collect();
+        const KERN_SUCCESS: i32 = 0;
+        const K_IOMASTER_PORT_DEFAULT: u32 = 0;
+        const KCFSTRING_ENCODING_UTF8: u32 = 0x08000100;
+        const KCF_NUMBER_SINT64_TYPE: i32 = 4;
 
-        // Skip header lines and parse data
-        for line in lines.iter().skip(2) {
-            let values: Vec<&str> = line.split_whitespace().collect();
-            if values.is_empty() {
-                continue;
+        unsafe {
+            let matching =
+                IOServiceMatching(CString::new("IOBlockStorageDriver").unwrap().as_ptr());
+            if matching.is_null() {
+                return Err(SysInfoError::SysCall(
+                    "IOServiceMatching failed".to_string(),
+                ));
             }
 
-            // iostat on macOS shows: KB/t, tps, MB/s for each device
-            // This is a simplified parsing
-            for (i, device) in devices.iter().enumerate() {
-                if device.starts_with("disk") {
-                    let base_idx = i * 3;
-                    if base_idx + 2 < values.len() {
-                        stats.push(DiskIoStats {
-                            device: device.to_string(),
-                            reads: 0,  // Not directly available from iostat
-                            writes: 0, // Not directly available from iostat
-                            bytes_read: 0,
-                            bytes_written: 0,
-                            read_time_ms: 0,
-                            write_time_ms: 0,
-                        });
+            let mut iterator: u32 = 0;
+            let kr = IOServiceGetMatchingServices(K_IOMASTER_PORT_DEFAULT, matching, &mut iterator);
+            if kr != KERN_SUCCESS {
+                return Err(SysInfoError::SysCall(format!(
+                    "IOServiceGetMatchingServices failed: {kr}"
+                )));
+            }
+
+            let mut stats = Vec::new();
+            let mut service = IOIteratorNext(iterator);
+            let mut disk_index: u32 = 0;
+
+            while service != 0 {
+                let mut props: *mut libc::c_void = ptr::null_mut();
+                let kr = IORegistryEntryCreateCFProperties(service, &mut props, ptr::null(), 0);
+
+                if kr == KERN_SUCCESS && !props.is_null() {
+                    let stats_key = CFStringCreateWithCString(
+                        ptr::null(),
+                        CString::new("Statistics").unwrap().as_ptr(),
+                        KCFSTRING_ENCODING_UTF8,
+                    );
+
+                    if !stats_key.is_null() {
+                        let stats_dict = CFDictionaryGetValue(props, stats_key);
+                        CFRelease(stats_key);
+
+                        if !stats_dict.is_null() {
+                            let mut bytes_read: u64 = 0;
+                            let mut bytes_written: u64 = 0;
+                            let mut reads: u64 = 0;
+                            let mut writes: u64 = 0;
+                            let mut read_time_ms: u64 = 0;
+                            let mut write_time_ms: u64 = 0;
+
+                            macro_rules! read_stat {
+                                ($name:expr, $dest:expr) => {{
+                                    let key = CFStringCreateWithCString(
+                                        ptr::null(),
+                                        CString::new($name).unwrap().as_ptr(),
+                                        KCFSTRING_ENCODING_UTF8,
+                                    );
+                                    if !key.is_null() {
+                                        let val = CFDictionaryGetValue(stats_dict, key);
+                                        CFRelease(key);
+                                        if !val.is_null() {
+                                            let mut v: i64 = 0;
+                                            CFNumberGetValue(
+                                                val,
+                                                KCF_NUMBER_SINT64_TYPE,
+                                                &mut v as *mut i64 as *mut libc::c_void,
+                                            );
+                                            $dest = v.max(0) as u64;
+                                        }
+                                    }
+                                }};
+                            }
+
+                            read_stat!("Bytes (Read)", bytes_read);
+                            read_stat!("Bytes (Write)", bytes_written);
+                            read_stat!("Operations (Read)", reads);
+                            read_stat!("Operations (Write)", writes);
+                            read_stat!("Total Time (Read)", read_time_ms);
+                            read_stat!("Total Time (Write)", write_time_ms);
+
+                            if bytes_read > 0 || bytes_written > 0 || reads > 0 || writes > 0 {
+                                stats.push(DiskIoStats {
+                                    device: format!("disk{disk_index}"),
+                                    reads,
+                                    writes,
+                                    bytes_read,
+                                    bytes_written,
+                                    read_time_ms,
+                                    write_time_ms,
+                                });
+                                disk_index += 1;
+                            }
+                        }
                     }
-                    break;
-                }
-            }
-        }
 
-        Ok(stats)
+                    CFRelease(props);
+                }
+
+                IOObjectRelease(service);
+                service = IOIteratorNext(iterator);
+            }
+
+            IOObjectRelease(iterator);
+            Ok(stats)
+        }
     }
 }
 

@@ -1038,8 +1038,6 @@ mod macos {
         use libproc::task_info::TaskAllInfo;
 
         let pid_i32 = pid as i32;
-        let self_pid = std::process::id();
-        let is_self = pid == self_pid;
 
         let task_info = match pidinfo::<TaskAllInfo>(pid_i32, 0) {
             Ok(info) => info,
@@ -1057,9 +1055,10 @@ mod macos {
             }
         };
 
-        let mut stats = Vec::new();
+        // Collect socket info from proc_pidfdinfo (addresses only)
+        let mut stats: Vec<SocketStats> = Vec::new();
 
-        for fd in fds {
+        for fd in &fds {
             if !matches!(ProcFDType::from(fd.proc_fdtype), ProcFDType::Socket) {
                 continue;
             }
@@ -1085,63 +1084,123 @@ mod macos {
                 None => continue,
             };
 
-            // For the current process, use getsockopt(TCP_CONNECTION_INFO)
-            // which provides accurate per-socket byte counters.
-            // macOS does NOT expose byte counters for other processes' sockets
-            // through any public API - netstat -b uses private kernel interfaces.
-            let (bytes_sent, bytes_received) = if is_self {
-                get_tcp_byte_counters(fd.proc_fd).unwrap_or((0, 0))
-            } else {
-                (0, 0)
-            };
-
             stats.push(SocketStats {
                 pid,
                 fd: fd.proc_fd as u32,
                 protocol,
                 local_addr,
                 remote_addr,
-                bytes_sent,
-                bytes_received,
+                bytes_sent: 0,
+                bytes_received: 0,
             });
         }
 
-        eprintln!(
-            "[SocketStats] PID {}: {} TCP sockets (is_self={})",
-            pid,
-            stats.len(),
-            is_self
-        );
+        // Fetch byte counters from nettop
+        if !stats.is_empty() {
+            if let Ok(nettop_map) = fetch_nettop_byte_counters(pid) {
+                for stat in &mut stats {
+                    let local_ip = stat.local_addr.ip().to_string();
+                    let local_port = stat.local_addr.port().to_string();
+                    let remote_ip = stat
+                        .remote_addr
+                        .map(|a| a.ip().to_string())
+                        .unwrap_or_default();
+                    let remote_port = stat
+                        .remote_addr
+                        .map(|a| a.port().to_string())
+                        .unwrap_or_default();
+
+                    for (key, (tx, rx)) in &nettop_map {
+                        // nettop key format: "tcp4 192.168.1.1:55806<->17.57.145.153:5223"
+                        // Match by checking if the key contains our local and remote addr:port
+                        let key_contains_local = key.contains(&format!("{local_ip}:{local_port}"))
+                            || key.contains(&format!("{local_ip}.{local_port}"));
+                        let key_contains_remote = if stat.remote_addr.is_some() {
+                            key.contains(&format!("{remote_ip}:{remote_port}"))
+                                || key.contains(&format!("{remote_ip}.{remote_port}"))
+                        } else {
+                            // Listening sockets have *:* on remote side
+                            key.contains("<->*")
+                        };
+
+                        if key_contains_local && key_contains_remote {
+                            stat.bytes_sent = *tx;
+                            stat.bytes_received = *rx;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(stats)
     }
 
-    /// Get TCP byte counters via getsockopt(TCP_CONNECTION_INFO).
-    /// Only works for the current process's sockets.
-    fn get_tcp_byte_counters(fd: i32) -> Option<(u64, u64)> {
-        const TCP_CONNECTION_INFO: libc::c_int = 0x106;
-        let mut ti = [0u8; 112];
-        let mut len = ti.len() as libc::socklen_t;
-        let ret = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::IPPROTO_TCP,
-                TCP_CONNECTION_INFO,
-                ti.as_mut_ptr() as *mut libc::c_void,
-                &mut len,
-            )
+    /// Use `nettop` to fetch per-connection byte counters for a given PID.
+    /// Uses `-L` CSV logging mode for reliable parsing.
+    /// Returns a map of "local_addr<->remote_addr" -> (bytes_out, bytes_in).
+    fn fetch_nettop_byte_counters(pid: u32) -> Result<HashMap<String, (u64, u64)>> {
+        let mut map = HashMap::new();
+        let pid_str = pid.to_string();
+
+        let output = match std::process::Command::new("nettop")
+            .args(["-L", "1", "-n", "-p", &pid_str])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("[SocketStats] nettop failed: {e}");
+                return Ok(map);
+            }
         };
-        if ret != 0 {
-            return None;
+
+        if !output.status.success() {
+            return Ok(map);
         }
-        if ti.len() >= 72 {
-            // tcpi_txbytes at byte offset 64 (u32)
-            // tcpi_rxbytes at byte offset 68 (u32)
-            let tx = u32::from_ne_bytes(ti[64..68].try_into().ok()?) as u64;
-            let rx = u32::from_ne_bytes(ti[68..72].try_into().ok()?) as u64;
-            Some((tx, rx))
-        } else {
-            None
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // nettop -L CSV format:
+        //   Header: time,,interface,state,bytes_in,bytes_out,rx_dupe,...
+        //   Process summary: time,name.PID,,,total_in,total_out,...
+        //   Connection:      time,local<->remote,interface,state,conn_in,conn_out,...
+        //
+        // bytes_in is column index 4, bytes_out is column index 5
+        let mut in_header = true;
+        for line in stdout.lines() {
+            if in_header {
+                in_header = false;
+                continue;
+            }
+
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let cols: Vec<&str> = line.split(',').collect();
+            if cols.len() < 6 {
+                continue;
+            }
+
+            // Column 1: connection identifier (local<->remote) or process name
+            // Column 4: bytes_in
+            // Column 5: bytes_out
+            let conn_id = cols[1].trim();
+            let bytes_in: u64 = cols[4].trim().parse().unwrap_or(0);
+            let bytes_out: u64 = cols[5].trim().parse().unwrap_or(0);
+
+            // Skip process summary lines (no <-> in the identifier)
+            if !conn_id.contains("<->") {
+                continue;
+            }
+
+            if bytes_in > 0 || bytes_out > 0 {
+                map.insert(conn_id.to_string(), (bytes_out, bytes_in));
+            }
         }
+
+        Ok(map)
     }
 
     // ---- Queue info structures (from sys/proc_info.h) ----

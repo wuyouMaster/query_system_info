@@ -296,6 +296,25 @@ pub struct SocketConnection {
     pub inode: u64,
 }
 
+/// Per-socket I/O statistics
+#[derive(Debug, Clone)]
+pub struct SocketStats {
+    /// Process ID
+    pub pid: u32,
+    /// File descriptor number (platform specific identifier)
+    pub fd: u32,
+    /// Socket protocol
+    pub protocol: SocketProtocol,
+    /// Local address
+    pub local_addr: SocketAddr,
+    /// Remote address
+    pub remote_addr: Option<SocketAddr>,
+    /// Total bytes sent through this socket
+    pub bytes_sent: u64,
+    /// Total bytes received through this socket
+    pub bytes_received: u64,
+}
+
 /// Socket connection event for process tracking
 #[derive(Debug, Clone)]
 pub struct SocketConnectionEvent {
@@ -456,6 +475,31 @@ pub struct XinpGen {
     xig_count: u32,
     xig_gen: u64,
     xig_sogen: u64,
+}
+
+/// Per-socket receive/send queue information
+#[derive(Debug, Clone)]
+pub struct SocketQueueInfo {
+    /// Process ID
+    pub pid: u32,
+    /// File descriptor number
+    pub fd: u32,
+    /// Socket protocol
+    pub protocol: SocketProtocol,
+    /// Local address
+    pub local_addr: SocketAddr,
+    /// Remote address (None for listening/UDP sockets)
+    pub remote_addr: Option<SocketAddr>,
+    /// Connection state
+    pub state: SocketState,
+    /// Current bytes in receive queue (pending read)
+    pub recv_queue_bytes: u32,
+    /// Receive queue high water mark
+    pub recv_queue_hiwat: u32,
+    /// Current bytes in send queue (pending write)
+    pub send_queue_bytes: u32,
+    /// Send queue high water mark
+    pub send_queue_hiwat: u32,
 }
 
 /// Child process event information

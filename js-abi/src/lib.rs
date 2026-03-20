@@ -6,7 +6,9 @@ use query_system_info::memory::get_memory_info;
 use query_system_info::process::{
     ProcessSocketTracker, ProcessTracker, get_process_io, list_processes,
 };
-use query_system_info::socket::{get_all_connections, get_socket_summary};
+use query_system_info::socket::{
+    get_all_connections, get_process_socket_queues, get_process_socket_stats, get_socket_summary,
+};
 use query_system_info::types::SocketState;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -96,6 +98,18 @@ pub struct JsProcessIoInfo {
     pub write_chars: f64,
     pub read_ops: f64,
     pub write_ops: f64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsSocketStats {
+    pub pid: f64,
+    pub fd: f64,
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub bytes_sent: f64,
+    pub bytes_received: f64,
 }
 
 #[napi(object)]
@@ -453,6 +467,64 @@ pub fn js_get_process_io(pid: f64) -> napi::Result<JsProcessIoInfo> {
         read_ops: stats.read_ops as f64,
         write_ops: stats.write_ops as f64,
     })
+}
+
+#[napi]
+pub fn js_get_process_socket_stats(pid: f64) -> napi::Result<Vec<JsSocketStats>> {
+    let stats = into_napi_result(
+        get_process_socket_stats(pid as u32),
+        &format!("get_process_socket_stats({pid}) failed"),
+    )?;
+    Ok(stats
+        .into_iter()
+        .map(|s| JsSocketStats {
+            pid: s.pid as f64,
+            fd: s.fd as f64,
+            protocol: s.protocol.to_string(),
+            local_addr: s.local_addr.to_string(),
+            remote_addr: s.remote_addr.map(|a| a.to_string()),
+            bytes_sent: s.bytes_sent as f64,
+            bytes_received: s.bytes_received as f64,
+        })
+        .collect())
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsSocketQueueInfo {
+    pub pid: f64,
+    pub fd: f64,
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub state: String,
+    pub recv_queue_bytes: f64,
+    pub recv_queue_hiwat: f64,
+    pub send_queue_bytes: f64,
+    pub send_queue_hiwat: f64,
+}
+
+#[napi]
+pub fn js_get_process_socket_queues(pid: f64) -> napi::Result<Vec<JsSocketQueueInfo>> {
+    let queues = into_napi_result(
+        get_process_socket_queues(pid as u32),
+        &format!("get_process_socket_queues({pid}) failed"),
+    )?;
+    Ok(queues
+        .into_iter()
+        .map(|q| JsSocketQueueInfo {
+            pid: q.pid as f64,
+            fd: q.fd as f64,
+            protocol: q.protocol.to_string(),
+            local_addr: q.local_addr.to_string(),
+            remote_addr: q.remote_addr.map(|a| a.to_string()),
+            state: q.state.to_string(),
+            recv_queue_bytes: q.recv_queue_bytes as f64,
+            recv_queue_hiwat: q.recv_queue_hiwat as f64,
+            send_queue_bytes: q.send_queue_bytes as f64,
+            send_queue_hiwat: q.send_queue_hiwat as f64,
+        })
+        .collect())
 }
 
 #[napi]

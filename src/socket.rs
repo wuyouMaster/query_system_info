@@ -7,9 +7,10 @@
 //! - **macOS**: Uses `proc_listpidspath` and `lsof` style syscalls via libproc
 //! - **Windows**: Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from IP Helper API
 
-use crate::error::Result;
+use crate::error::{Result, SysInfoError};
 use crate::types::{
-    SocketConnection, SocketConnectionEvent, SocketProtocol, SocketState, SocketStateSummary,
+    SocketConnection, SocketConnectionEvent, SocketProtocol, SocketQueueInfo, SocketState,
+    SocketStateSummary, SocketStats,
 };
 use std::collections::HashMap;
 
@@ -77,6 +78,43 @@ pub fn get_connections_by_pid(pid: u32) -> Result<Vec<SocketConnectionEvent>> {
         }
     }
     Ok(result)
+}
+
+/// Get per-socket I/O statistics for a specific process ID
+pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>> {
+    #[cfg(target_os = "linux")]
+    return linux::get_process_socket_stats(pid);
+
+    #[cfg(target_os = "macos")]
+    return macos::get_process_socket_stats(pid);
+
+    #[cfg(target_os = "windows")]
+    return innerWindows::get_process_socket_stats(pid);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
+}
+
+/// Get per-socket receive/send queue information for a specific process
+///
+/// Returns the current bytes in each socket's receive and send queues,
+/// along with the high water marks for each queue.
+pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
+    #[cfg(target_os = "linux")]
+    return linux::get_process_socket_queues(pid);
+
+    #[cfg(target_os = "macos")]
+    return macos::get_process_socket_queues(pid);
+
+    #[cfg(target_os = "windows")]
+    return innerWindows::get_process_socket_queues(pid);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
 }
 
 /// Get TCP IPv4 connections
@@ -461,6 +499,234 @@ mod linux {
         let inode_str = &link[8..link.len() - 1];
         inode_str.parse().ok()
     }
+
+    pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>> {
+        use std::os::unix::io::RawFd;
+
+        let fd_dir = format!("/proc/{}/fd", pid);
+        let fd_entries = match fs::read_dir(&fd_dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut stats = Vec::new();
+
+        for fd_entry in fd_entries.flatten() {
+            let link = match fs::read_link(fd_entry.path()) {
+                Ok(link) => link,
+                Err(_) => continue,
+            };
+            let link_str = link.to_string_lossy();
+            if !link_str.starts_with("socket:[") {
+                continue;
+            }
+
+            let fd_num: u32 = match fd_entry.file_name().to_string_lossy().parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            // We cannot call getsockopt on another process's fd directly.
+            // Instead, we open /proc/[pid]/fd/[fd] which gives us a new fd
+            // pointing to the same socket, then query TCP_INFO on it.
+            let proc_fd_path = format!("/proc/{}/fd/{}", pid, fd_num);
+            let raw_fd: RawFd = unsafe {
+                libc::open(
+                    std::ffi::CString::new(proc_fd_path.as_str())
+                        .unwrap()
+                        .as_ptr(),
+                    libc::O_RDONLY | libc::O_NONBLOCK,
+                )
+            };
+            if raw_fd < 0 {
+                continue;
+            }
+
+            let mut tcp_info: libc::tcp_info = unsafe { std::mem::zeroed() };
+            let mut info_len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
+            let ret = unsafe {
+                libc::getsockopt(
+                    raw_fd,
+                    libc::IPPROTO_TCP,
+                    libc::TCP_INFO,
+                    &mut tcp_info as *mut _ as *mut libc::c_void,
+                    &mut info_len,
+                )
+            };
+
+            if ret == 0 {
+                // Get local and remote addresses
+                let mut local_addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut addr_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                unsafe {
+                    libc::getsockname(
+                        raw_fd,
+                        &mut local_addr as *mut _ as *mut libc::sockaddr,
+                        &mut addr_len,
+                    );
+                }
+
+                let mut remote_addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut addr_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                unsafe {
+                    libc::getpeername(
+                        raw_fd,
+                        &mut remote_addr as *mut _ as *mut libc::sockaddr,
+                        &mut addr_len,
+                    );
+                }
+
+                let local = sockaddr_to_socket_addr(&local_addr);
+                let remote = sockaddr_to_socket_addr(&remote_addr);
+
+                let protocol = if tcp_info.tcpi_family as i32 == libc::AF_INET6 {
+                    SocketProtocol::TcpV6
+                } else {
+                    SocketProtocol::TcpV4
+                };
+
+                stats.push(SocketStats {
+                    pid,
+                    fd: fd_num,
+                    protocol,
+                    local_addr: local,
+                    remote_addr: remote,
+                    bytes_sent: tcp_info.tcpi_bytes_sent,
+                    bytes_received: tcp_info.tcpi_bytes_received,
+                });
+            }
+
+            unsafe {
+                libc::close(raw_fd);
+            }
+        }
+
+        Ok(stats)
+    }
+
+    fn sockaddr_to_socket_addr(storage: &libc::sockaddr_storage) -> std::net::SocketAddr {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+        unsafe {
+            match storage.ss_family as i32 {
+                libc::AF_INET => {
+                    let addr = &*(storage as *const _ as *const libc::sockaddr_in);
+                    SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr))),
+                        u16::from_be(addr.sin_port),
+                    )
+                }
+                libc::AF_INET6 => {
+                    let addr = &*(storage as *const _ as *const libc::sockaddr_in6);
+                    SocketAddr::new(
+                        IpAddr::V6(Ipv6Addr::from(addr.sin6_addr.s6_addr)),
+                        u16::from_be(addr.sin6_port),
+                    )
+                }
+                _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            }
+        }
+    }
+
+    pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
+        let inode_set = get_process_socket_inodes(pid);
+        let mut result = Vec::new();
+
+        // Parse /proc/net/tcp for TCPv4 sockets
+        if let Ok(content) = fs::read_to_string("/proc/net/tcp") {
+            for line in content.lines().skip(1) {
+                if let Some(info) = parse_tcp_queue_line(line, SocketProtocol::TcpV4, &inode_set) {
+                    result.push(info);
+                }
+            }
+        }
+
+        // Parse /proc/net/tcp6 for TCPv6 sockets
+        if let Ok(content) = fs::read_to_string("/proc/net/tcp6") {
+            for line in content.lines().skip(1) {
+                if let Some(info) = parse_tcp_queue_line(line, SocketProtocol::TcpV6, &inode_set) {
+                    result.push(info);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn get_process_socket_inodes(pid: u32) -> HashSet<u64> {
+        let mut inodes = HashSet::new();
+        let fd_dir = format!("/proc/{}/fd", pid);
+        let fd_entries = match fs::read_dir(&fd_dir) {
+            Ok(entries) => entries,
+            Err(_) => return inodes,
+        };
+
+        for fd_entry in fd_entries.flatten() {
+            if let Ok(link) = fs::read_link(fd_entry.path()) {
+                let link_str = link.to_string_lossy();
+                if link_str.starts_with("socket:[") && link_str.ends_with(']') {
+                    let inode_str = &link_str[8..link_str.len() - 1];
+                    if let Ok(inode) = inode_str.parse::<u64>() {
+                        inodes.insert(inode);
+                    }
+                }
+            }
+        }
+        inodes
+    }
+
+    fn parse_tcp_queue_line(
+        line: &str,
+        protocol: SocketProtocol,
+        inodes: &HashSet<u64>,
+    ) -> Option<SocketQueueInfo> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 10 {
+            return None;
+        }
+
+        let local = parse_hex_addr(parts[1])?;
+        let remote = parse_hex_addr(parts[2])?;
+        let state_byte = u8::from_str_radix(parts[3], 16).ok()?;
+        let state = tcp_state_from_kernel(state_byte);
+
+        // tx_queue:rx_queue field (parts[4]), format: "XXXX:XXXX"
+        let queue_parts: Vec<&str> = parts[4].split(':').collect();
+        let send_queue = if queue_parts.len() >= 1 {
+            u32::from_str_radix(queue_parts[0], 16).unwrap_or(0)
+        } else {
+            0
+        };
+        let recv_queue = if queue_parts.len() >= 2 {
+            u32::from_str_radix(queue_parts[1], 16).unwrap_or(0)
+        } else {
+            0
+        };
+
+        let inode: u64 = parts[9].parse().ok()?;
+
+        if !inodes.contains(&inode) {
+            return None;
+        }
+
+        let remote_addr = if remote.port() != 0 {
+            Some(remote)
+        } else {
+            None
+        };
+
+        Some(SocketQueueInfo {
+            pid: 0,
+            fd: 0,
+            protocol,
+            local_addr: local,
+            remote_addr,
+            state,
+            recv_queue_bytes: recv_queue,
+            recv_queue_hiwat: 0,
+            send_queue_bytes: send_queue,
+            send_queue_hiwat: 0,
+        })
+    }
 }
 
 // ============================================================================
@@ -764,8 +1030,338 @@ mod macos {
             _ => SocketState::Unknown,
         }
     }
+
+    pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>> {
+        use libproc::file_info::{pidfdinfo, ListFDs, ProcFDType};
+        use libproc::net_info::{SocketFDInfo, SocketInfoKind};
+        use libproc::proc_pid::{listpidinfo, pidinfo};
+        use libproc::task_info::TaskAllInfo;
+
+        let pid_i32 = pid as i32;
+        let self_pid = std::process::id();
+        let is_self = pid == self_pid;
+
+        let task_info = match pidinfo::<TaskAllInfo>(pid_i32, 0) {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("[SocketStats] pidinfo failed for PID {}: {:?}", pid, e);
+                return Ok(Vec::new());
+            }
+        };
+        let fd_count = task_info.pbsd.pbi_nfiles as usize;
+        let fds = match listpidinfo::<ListFDs>(pid_i32, fd_count) {
+            Ok(fds) => fds,
+            Err(e) => {
+                eprintln!("[SocketStats] listpidinfo failed for PID {}: {:?}", pid, e);
+                return Ok(Vec::new());
+            }
+        };
+
+        let mut stats = Vec::new();
+
+        for fd in fds {
+            if !matches!(ProcFDType::from(fd.proc_fdtype), ProcFDType::Socket) {
+                continue;
+            }
+            let sock = match pidfdinfo::<SocketFDInfo>(pid_i32, fd.proc_fd) {
+                Ok(sock) => sock,
+                Err(_) => continue,
+            };
+
+            let kind = SocketInfoKind::from(sock.psi.soi_kind);
+            if !matches!(kind, SocketInfoKind::Tcp) {
+                continue;
+            }
+
+            let info = unsafe { sock.psi.soi_proto.pri_tcp };
+            let protocol = match info.tcpsi_ini.insi_vflag {
+                1 => SocketProtocol::TcpV4,
+                2 => SocketProtocol::TcpV6,
+                _ => continue,
+            };
+
+            let (local_addr, remote_addr) = match parse_in_sock_info(protocol, &info.tcpsi_ini) {
+                Some(addrs) => addrs,
+                None => continue,
+            };
+
+            // For the current process, use getsockopt(TCP_CONNECTION_INFO)
+            // which provides accurate per-socket byte counters.
+            // macOS does NOT expose byte counters for other processes' sockets
+            // through any public API - netstat -b uses private kernel interfaces.
+            let (bytes_sent, bytes_received) = if is_self {
+                get_tcp_byte_counters(fd.proc_fd).unwrap_or((0, 0))
+            } else {
+                (0, 0)
+            };
+
+            stats.push(SocketStats {
+                pid,
+                fd: fd.proc_fd as u32,
+                protocol,
+                local_addr,
+                remote_addr,
+                bytes_sent,
+                bytes_received,
+            });
+        }
+
+        eprintln!(
+            "[SocketStats] PID {}: {} TCP sockets (is_self={})",
+            pid,
+            stats.len(),
+            is_self
+        );
+        Ok(stats)
+    }
+
+    /// Get TCP byte counters via getsockopt(TCP_CONNECTION_INFO).
+    /// Only works for the current process's sockets.
+    fn get_tcp_byte_counters(fd: i32) -> Option<(u64, u64)> {
+        const TCP_CONNECTION_INFO: libc::c_int = 0x106;
+        let mut ti = [0u8; 112];
+        let mut len = ti.len() as libc::socklen_t;
+        let ret = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                TCP_CONNECTION_INFO,
+                ti.as_mut_ptr() as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if ret != 0 {
+            return None;
+        }
+        if ti.len() >= 72 {
+            // tcpi_txbytes at byte offset 64 (u32)
+            // tcpi_rxbytes at byte offset 68 (u32)
+            let tx = u32::from_ne_bytes(ti[64..68].try_into().ok()?) as u64;
+            let rx = u32::from_ne_bytes(ti[68..72].try_into().ok()?) as u64;
+            Some((tx, rx))
+        } else {
+            None
+        }
+    }
+
+    // ---- Queue info structures (from sys/proc_info.h) ----
+
+    const PROC_PIDLISTFDS: i32 = 1;
+    const PROC_PIDFDSOCKETINFO: i32 = 3;
+    const PROX_FDTYPE_SOCKET: u32 = 2;
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    struct SockbufInfo {
+        sbi_cc: u32,
+        sbi_hiwat: u32,
+        sbi_mbcnt: u32,
+        sbi_mbmax: u32,
+        sbi_lowat: u32,
+        sbi_flags: i16,
+        sbi_timeo: i16,
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    struct ProcFdinfo {
+        proc_fd: i32,
+        proc_fdtype: u32,
+    }
+
+    #[repr(C)]
+    struct SocketFdinfo {
+        pfi_fi_flags: u32,
+        pfi_status: u32,
+        pfi_offset: i64,
+        pfi_type: i32,
+        pfi_guardflags: u32,
+        soi_stat: [u8; 136],
+        soi_so: u64,
+        soi_pcb: u64,
+        soi_type: i32,
+        soi_protocol: i32,
+        soi_family: i32,
+        soi_options: i16,
+        soi_linger: i16,
+        soi_state: i16,
+        soi_qlen: i16,
+        soi_incqlen: i16,
+        soi_qlimit: i16,
+        soi_timeo: i16,
+        soi_error: u16,
+        soi_oobmark: u32,
+        soi_rcv: SockbufInfo,
+        soi_snd: SockbufInfo,
+        soi_kind: i32,
+        _reserved: u32,
+        _proto: [u8; 528],
+    }
+
+    fn list_process_socket_fds(pid: i32) -> Vec<ProcFdinfo> {
+        use std::ffi::c_void;
+        let mut buf: Vec<ProcFdinfo> = vec![unsafe { std::mem::zeroed() }; 2048];
+        let buf_size = buf.len() * std::mem::size_of::<ProcFdinfo>();
+
+        let ret = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                PROC_PIDLISTFDS,
+                0,
+                buf.as_mut_ptr() as *mut c_void,
+                buf_size as i32,
+            )
+        };
+
+        if ret <= 0 {
+            return Vec::new();
+        }
+
+        let fd_count = ret as usize / std::mem::size_of::<ProcFdinfo>();
+        buf.into_iter()
+            .take(fd_count)
+            .filter(|fd| fd.proc_fdtype == PROX_FDTYPE_SOCKET)
+            .collect()
+    }
+
+    fn get_socket_fdinfo(pid: i32, fd: i32) -> Option<SocketFdinfo> {
+        use std::ffi::c_void;
+        let mut info: SocketFdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<SocketFdinfo>() as i32;
+
+        let ret = unsafe {
+            libc::proc_pidfdinfo(
+                pid,
+                fd,
+                PROC_PIDFDSOCKETINFO,
+                &mut info as *mut _ as *mut c_void,
+                size,
+            )
+        };
+
+        if ret >= size {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
+        let pid_i32 = pid as i32;
+        let fds = list_process_socket_fds(pid_i32);
+        let mut result = Vec::new();
+
+        for fd_info in fds {
+            let sock = match get_socket_fdinfo(pid_i32, fd_info.proc_fd) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let protocol = match sock.soi_protocol {
+                p if p == libc::IPPROTO_TCP && sock.soi_family == libc::AF_INET => {
+                    SocketProtocol::TcpV4
+                }
+                p if p == libc::IPPROTO_TCP && sock.soi_family == libc::AF_INET6 => {
+                    SocketProtocol::TcpV6
+                }
+                p if p == libc::IPPROTO_UDP && sock.soi_family == libc::AF_INET => {
+                    SocketProtocol::UdpV4
+                }
+                p if p == libc::IPPROTO_UDP && sock.soi_family == libc::AF_INET6 => {
+                    SocketProtocol::UdpV6
+                }
+                _ => continue,
+            };
+
+            let state = match sock.soi_kind {
+                2 => {
+                    // SOCKINFO_TCP
+                    let tcp_state = sock.soi_state;
+                    tcp_state_from_macos(tcp_state as i32)
+                }
+                _ => SocketState::Unknown,
+            };
+
+            // Parse addresses from the soi_proto union area.
+            // For TCP (SOCKINFO_TCP=2), the inpcb info starts at proto offset 48
+            // (after xtcpcb64 header). The local/remote addr+port are there.
+            let (local_addr, remote_addr) = parse_queue_sock_addrs(sock.soi_family, &sock._proto);
+
+            result.push(SocketQueueInfo {
+                pid,
+                fd: fd_info.proc_fd as u32,
+                protocol,
+                local_addr,
+                remote_addr,
+                state,
+                recv_queue_bytes: sock.soi_rcv.sbi_cc,
+                recv_queue_hiwat: sock.soi_rcv.sbi_hiwat,
+                send_queue_bytes: sock.soi_snd.sbi_cc,
+                send_queue_hiwat: sock.soi_snd.sbi_hiwat,
+            });
+        }
+
+        Ok(result)
+    }
+
+    fn parse_queue_sock_addrs(family: i32, proto: &[u8; 528]) -> (SocketAddr, Option<SocketAddr>) {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        let default_v4 = || (SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0), None);
+
+        // The proto union layout for TCP (in inpcb section of xtcpcb64):
+        // After 48 bytes of xtcpcb header, the inpcb section has:
+        //   xip_raddr: [u8; 16]   (offset 48 within proto)
+        //   xip_laddr: [u8; 16]   (offset 64 within proto)
+        //   xip_fport: u16        (offset 80, big-endian)
+        //   xip_lport: u16        (offset 82, big-endian)
+        if proto.len() < 84 {
+            return default_v4();
+        }
+
+        let lport = u16::from_be_bytes([proto[82], proto[83]]);
+        let fport = u16::from_be_bytes([proto[80], proto[81]]);
+
+        match family {
+            libc::AF_INET => {
+                let laddr = Ipv4Addr::new(
+                    proto[64 + 12],
+                    proto[64 + 13],
+                    proto[64 + 14],
+                    proto[64 + 15],
+                );
+                let faddr = Ipv4Addr::new(
+                    proto[48 + 12],
+                    proto[48 + 13],
+                    proto[48 + 14],
+                    proto[48 + 15],
+                );
+                let local = SocketAddr::new(IpAddr::V4(laddr), lport);
+                let remote = if fport != 0 {
+                    Some(SocketAddr::new(IpAddr::V4(faddr), fport))
+                } else {
+                    None
+                };
+                (local, remote)
+            }
+            libc::AF_INET6 => {
+                let laddr = Ipv6Addr::from(<[u8; 16]>::try_from(&proto[64..80]).unwrap_or([0; 16]));
+                let faddr = Ipv6Addr::from(<[u8; 16]>::try_from(&proto[48..64]).unwrap_or([0; 16]));
+                let local = SocketAddr::new(IpAddr::V6(laddr), lport);
+                let remote = if fport != 0 {
+                    Some(SocketAddr::new(IpAddr::V6(faddr), fport))
+                } else {
+                    None
+                };
+                (local, remote)
+            }
+            _ => default_v4(),
+        }
+    }
 }
 
+// ============================================================================
+// Windows Implementation - Using IP Helper API (iphlpapi)
 // ============================================================================
 // Windows Implementation - Using IP Helper API (iphlpapi)
 // ============================================================================
@@ -1062,6 +1658,267 @@ mod innerWindows {
 
         Ok(connections)
     }
+
+    pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>> {
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetPerTcpConnectionEStats, MIB_TCPROW2, TCP_ESTATS_TYPE,
+        };
+        use windows::Win32::Networking::WinSock::SOCKET_ERROR;
+
+        // First get all TCP connections for this PID
+        let mut size: u32 = 0;
+        unsafe {
+            let _ = GetExtendedTcpTable(
+                None,
+                &mut size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+        }
+
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut buffer: Vec<u8> = vec![0; size as usize];
+        unsafe {
+            GetExtendedTcpTable(
+                Some(buffer.as_mut_ptr() as *mut _),
+                &mut size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+        }
+
+        let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
+        let mut stats = Vec::new();
+
+        for i in 0..table.dwNumEntries as usize {
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
+
+            if row.dwOwningPid != pid {
+                continue;
+            }
+
+            let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
+            let local_port = u16::from_be(row.dwLocalPort as u16);
+            let remote_ip = Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes());
+            let remote_port = u16::from_be(row.dwRemotePort as u16);
+
+            let local_addr = SocketAddr::new(IpAddr::V4(local_ip), local_port);
+            let remote_addr = if remote_port != 0 {
+                Some(SocketAddr::new(IpAddr::V4(remote_ip), remote_port))
+            } else {
+                None
+            };
+
+            let mut bytes_sent: u64 = 0;
+            let mut bytes_received: u64 = 0;
+
+            // Use GetPerTcpConnectionEStats to get byte counters
+            let row2 = MIB_TCPROW2 {
+                dwState: row.dwState,
+                dwLocalAddr: row.dwLocalAddr,
+                dwLocalPort: row.dwLocalPort,
+                dwRemoteAddr: row.dwRemoteAddr,
+                dwRemotePort: row.dwRemotePort,
+                dwOwningPid: row.dwOwningPid,
+            };
+
+            unsafe {
+                // TCPConnEstatsData = 2: Data transfer stats
+                let mut rw_size: u32 = 0;
+                let ret = GetPerTcpConnectionEStats(
+                    &row2 as *const _ as *const _,
+                    TCP_ESTATS_TYPE(2), // TcpConnectionEstatsData
+                    None,
+                    0,
+                    0,
+                    None,
+                    0,
+                    &mut rw_size,
+                    None,
+                    0,
+                    0,
+                );
+
+                if ret != SOCKET_ERROR && rw_size > 0 {
+                    let mut rw_buf: Vec<u8> = vec![0; rw_size as usize];
+                    let ret2 = GetPerTcpConnectionEStats(
+                        &row2 as *const _ as *const _,
+                        TCP_ESTATS_TYPE(2),
+                        None,
+                        0,
+                        0,
+                        Some(rw_buf.as_mut_ptr() as *mut _),
+                        rw_size,
+                        &mut rw_size,
+                        None,
+                        0,
+                        0,
+                    );
+
+                    if ret2 != SOCKET_ERROR && rw_buf.len() >= 72 {
+                        // TCP_ESTATS_DATA_ROD_v0 structure:
+                        // BytesOut (8 bytes) at offset 56
+                        // BytesIn (8 bytes) at offset 64
+                        bytes_sent =
+                            u64::from_ne_bytes(rw_buf[56..64].try_into().unwrap_or([0; 8]));
+                        bytes_received =
+                            u64::from_ne_bytes(rw_buf[64..72].try_into().unwrap_or([0; 8]));
+                    }
+                }
+            }
+
+            stats.push(SocketStats {
+                pid,
+                fd: 0,
+                protocol: SocketProtocol::TcpV4,
+                local_addr,
+                remote_addr,
+                bytes_sent,
+                bytes_received,
+            });
+        }
+
+        Ok(stats)
+    }
+
+    pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetPerTcpConnectionEStats, MIB_TCPROW2, TCP_ESTATS_TYPE,
+        };
+        use windows::Win32::Networking::WinSock::SOCKET_ERROR;
+
+        let mut size: u32 = 0;
+        unsafe {
+            let _ = GetExtendedTcpTable(
+                None,
+                &mut size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+        }
+
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut buffer: Vec<u8> = vec![0; size as usize];
+        unsafe {
+            GetExtendedTcpTable(
+                Some(buffer.as_mut_ptr() as *mut _),
+                &mut size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+        }
+
+        let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
+        let mut result = Vec::new();
+
+        for i in 0..table.dwNumEntries as usize {
+            let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
+
+            if row.dwOwningPid != pid {
+                continue;
+            }
+
+            let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
+            let local_port = u16::from_be(row.dwLocalPort as u16);
+            let remote_ip = Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes());
+            let remote_port = u16::from_be(row.dwRemotePort as u16);
+
+            let local_addr = SocketAddr::new(IpAddr::V4(local_ip), local_port);
+            let remote_addr = if remote_port != 0 {
+                Some(SocketAddr::new(IpAddr::V4(remote_ip), remote_port))
+            } else {
+                None
+            };
+
+            let state = tcp_state_from_windows(row.dwState);
+
+            let row2 = MIB_TCPROW2 {
+                dwState: row.dwState,
+                dwLocalAddr: row.dwLocalAddr,
+                dwLocalPort: row.dwLocalPort,
+                dwRemoteAddr: row.dwRemoteAddr,
+                dwRemotePort: row.dwRemotePort,
+                dwOwningPid: row.dwOwningPid,
+            };
+
+            let mut send_queue: u32 = 0;
+            let mut recv_queue: u32 = 0;
+
+            unsafe {
+                // TCPConnEstatsData = 2: use Data stats to estimate queue
+                let mut rw_size: u32 = 0;
+                let ret = GetPerTcpConnectionEStats(
+                    &row2 as *const _ as *const _,
+                    TCP_ESTATS_TYPE(2),
+                    None,
+                    0,
+                    0,
+                    None,
+                    0,
+                    &mut rw_size,
+                    None,
+                    0,
+                    0,
+                );
+
+                if ret != SOCKET_ERROR && rw_size > 0 {
+                    let mut rw_buf: Vec<u8> = vec![0; rw_size as usize];
+                    let ret2 = GetPerTcpConnectionEStats(
+                        &row2 as *const _ as *const _,
+                        TCP_ESTATS_TYPE(2),
+                        None,
+                        0,
+                        0,
+                        Some(rw_buf.as_mut_ptr() as *mut _),
+                        rw_size,
+                        &mut rw_size,
+                        None,
+                        0,
+                        0,
+                    );
+
+                    if ret2 != SOCKET_ERROR {
+                        // Use retransmit data as an approximation for send queue depth
+                        // TCP_ESTATS_DATA_ROD_v0: DataRetransSegs at offset 24 (u64)
+                        if rw_buf.len() >= 32 {
+                            let retrans =
+                                u64::from_ne_bytes(rw_buf[24..32].try_into().unwrap_or([0; 8]));
+                            send_queue = retrans.min(u32::MAX as u64) as u32;
+                        }
+                    }
+                }
+            }
+
+            result.push(SocketQueueInfo {
+                pid,
+                fd: 0,
+                protocol: SocketProtocol::TcpV4,
+                local_addr,
+                remote_addr,
+                state,
+                recv_queue_bytes: recv_queue,
+                recv_queue_hiwat: 0,
+                send_queue_bytes: send_queue,
+                send_queue_hiwat: 0,
+            });
+        }
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -1114,5 +1971,20 @@ mod tests {
 
         // Note: sum might not equal total because of Unknown states
         assert!(sum <= summary.total, "State counts should not exceed total");
+    }
+
+    #[test]
+    fn test_get_process_socket_queues() {
+        let pid = std::process::id();
+        let result = get_process_socket_queues(pid);
+        assert!(result.is_ok(), "Should be able to get socket queues");
+        let queues = result.unwrap();
+        println!("Found {} socket queues for PID {}", queues.len(), pid);
+        for q in &queues {
+            println!(
+                "  fd={} proto={:?} recv={} send={} state={:?}",
+                q.fd, q.protocol, q.recv_queue_bytes, q.send_queue_bytes, q.state
+            );
+        }
     }
 }

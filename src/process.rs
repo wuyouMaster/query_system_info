@@ -6,7 +6,7 @@ use crate::error::{Result, SysInfoError};
 use crate::socket;
 use crate::types::{
     ChildProcessEvent, ProcessInfo, ProcessIoStats, ProcessState, SocketConnectionEvent,
-    SocketProtocol, SocketState,
+    SocketProtocol, SocketQueueInfo, SocketState,
 };
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -63,6 +63,17 @@ struct SocketTrackerState {
     callback: Box<dyn Fn(SocketConnectionEvent) + Send + 'static>,
 }
 
+/// Process socket queue tracker handle
+pub struct ProcessQueueTracker {
+    handle: Arc<Mutex<QueueTrackerState>>,
+}
+
+struct QueueTrackerState {
+    pid: u32,
+    running: bool,
+    callback: Box<dyn Fn(Vec<SocketQueueInfo>) + Send + 'static>,
+}
+
 /// Start tracking child processes of a given PID
 pub fn start_tracking_children<F>(pid: u32, callback: F) -> Result<ProcessTracker>
 where
@@ -103,6 +114,26 @@ where
     Ok(ProcessSocketTracker { handle: state })
 }
 
+/// Start tracking socket receive/send queue sizes of a given PID.
+/// The callback is invoked every 500ms with the current queue state of all sockets.
+pub fn start_tracking_queues<F>(pid: u32, callback: F) -> Result<ProcessQueueTracker>
+where
+    F: Fn(Vec<SocketQueueInfo>) + Send + 'static,
+{
+    let state = Arc::new(Mutex::new(QueueTrackerState {
+        pid,
+        running: true,
+        callback: Box::new(callback),
+    }));
+
+    let state_clone = Arc::clone(&state);
+    thread::spawn(move || {
+        queue_track_loop(state_clone);
+    });
+
+    Ok(ProcessQueueTracker { handle: state })
+}
+
 impl ProcessTracker {
     /// Stop tracking child processes
     pub fn stop(&self) {
@@ -114,6 +145,15 @@ impl ProcessTracker {
 
 impl ProcessSocketTracker {
     /// Stop tracking socket connections
+    pub fn stop(&self) {
+        if let Ok(mut state) = self.handle.lock() {
+            state.running = false;
+        }
+    }
+}
+
+impl ProcessQueueTracker {
+    /// Stop tracking socket queues
     pub fn stop(&self) {
         if let Ok(mut state) = self.handle.lock() {
             state.running = false;
@@ -171,6 +211,26 @@ fn socket_track_loop(state: Arc<Mutex<SocketTrackerState>>) {
                     (state_lock.callback)(conn);
                 }
             }
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn queue_track_loop(state: Arc<Mutex<QueueTrackerState>>) {
+    loop {
+        let (pid, running) = {
+            let s = state.lock().unwrap();
+            (s.pid, s.running)
+        };
+
+        if !running {
+            break;
+        }
+
+        if let Ok(queues) = socket::get_process_socket_queues(pid) {
+            let state_lock = state.lock().unwrap();
+            (state_lock.callback)(queues);
         }
 
         thread::sleep(Duration::from_millis(500));
@@ -1090,5 +1150,27 @@ mod tests {
 
         thread::sleep(Duration::from_millis(100));
         tracker.stop();
+    }
+
+    #[test]
+    fn test_queue_tracking_api() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = Arc::clone(&called);
+
+        let tracker = start_tracking_queues(std::process::id(), move |queues| {
+            called_clone.store(true, Ordering::SeqCst);
+            println!("Queue tracking: {} sockets", queues.len());
+        })
+        .expect("Failed to start queue tracking");
+
+        thread::sleep(Duration::from_millis(600));
+        tracker.stop();
+        assert!(
+            called.load(Ordering::SeqCst),
+            "Queue callback should have been called"
+        );
     }
 }

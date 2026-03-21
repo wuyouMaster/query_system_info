@@ -1426,10 +1426,10 @@ mod macos {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
 mod innerWindows {
     use super::*;
-    use std::mem;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use windows::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
         MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID,
@@ -1471,8 +1471,6 @@ mod innerWindows {
 
     pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
-
-        // First call to get required buffer size
         unsafe {
             let _ = GetExtendedTcpTable(
                 None,
@@ -1483,13 +1481,11 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
-
         unsafe {
             GetExtendedTcpTable(
                 Some(buffer.as_mut_ptr() as *mut _),
@@ -1506,7 +1502,6 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
-
             let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
             let local_port = u16::from_be(row.dwLocalPort as u16);
             let remote_ip = Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes());
@@ -1532,13 +1527,11 @@ mod innerWindows {
                     inode: 0,
                 });
         }
-
         Ok(connections)
     }
 
     pub fn get_tcp6_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
-
         unsafe {
             let _ = GetExtendedTcpTable(
                 None,
@@ -1549,13 +1542,11 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
-
         unsafe {
             GetExtendedTcpTable(
                 Some(buffer.as_mut_ptr() as *mut _),
@@ -1572,7 +1563,6 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCP6ROW_OWNER_PID).add(i)) };
-
             let local_ip = Ipv6Addr::from(row.ucLocalAddr);
             let local_port = u16::from_be(row.dwLocalPort as u16);
             let remote_ip = Ipv6Addr::from(row.ucRemoteAddr);
@@ -1598,13 +1588,11 @@ mod innerWindows {
                     inode: 0,
                 });
         }
-
         Ok(connections)
     }
 
     pub fn get_udp4_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
-
         unsafe {
             let _ = GetExtendedUdpTable(
                 None,
@@ -1615,13 +1603,11 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
-
         unsafe {
             GetExtendedUdpTable(
                 Some(buffer.as_mut_ptr() as *mut _),
@@ -1638,10 +1624,8 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDPROW_OWNER_PID).add(i)) };
-
             let local_ip = Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes());
             let local_port = u16::from_be(row.dwLocalPort as u16);
-
             let local_addr = SocketAddr::new(IpAddr::V4(local_ip), local_port);
 
             connections
@@ -1656,13 +1640,11 @@ mod innerWindows {
                     inode: 0,
                 });
         }
-
         Ok(connections)
     }
 
     pub fn get_udp6_sockets() -> Result<HashMap<SocketState, Vec<SocketConnection>>> {
         let mut size: u32 = 0;
-
         unsafe {
             let _ = GetExtendedUdpTable(
                 None,
@@ -1673,13 +1655,11 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(HashMap::new());
         }
 
         let mut buffer: Vec<u8> = vec![0; size as usize];
-
         unsafe {
             GetExtendedUdpTable(
                 Some(buffer.as_mut_ptr() as *mut _),
@@ -1696,10 +1676,8 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_UDP6ROW_OWNER_PID).add(i)) };
-
             let local_ip = Ipv6Addr::from(row.ucLocalAddr);
             let local_port = u16::from_be(row.dwLocalPort as u16);
-
             let local_addr = SocketAddr::new(IpAddr::V6(local_ip), local_port);
 
             connections
@@ -1714,17 +1692,13 @@ mod innerWindows {
                     inode: 0,
                 });
         }
-
         Ok(connections)
     }
 
     pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>> {
-        use windows::Win32::NetworkManagement::IpHelper::{
-            GetPerTcpConnectionEStats, MIB_TCPROW2, TCP_ESTATS_TYPE,
-        };
-        use windows::Win32::Networking::WinSock::SOCKET_ERROR;
+        // Start ETW network tracing on first call
+        crate::etw::start_etw_trace();
 
-        // First get all TCP connections for this PID
         let mut size: u32 = 0;
         unsafe {
             let _ = GetExtendedTcpTable(
@@ -1736,7 +1710,6 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(Vec::new());
         }
@@ -1758,7 +1731,6 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
-
             if row.dwOwningPid != pid {
                 continue;
             }
@@ -1775,84 +1747,30 @@ mod innerWindows {
                 None
             };
 
-            let mut bytes_sent: u64 = 0;
-            let mut bytes_received: u64 = 0;
-
-            // Use GetPerTcpConnectionEStats to get byte counters
-            let row2 = MIB_TCPROW2 {
-                dwState: row.dwState,
-                dwLocalAddr: row.dwLocalAddr,
-                dwLocalPort: row.dwLocalPort,
-                dwRemoteAddr: row.dwRemoteAddr,
-                dwRemotePort: row.dwRemotePort,
-                dwOwningPid: row.dwOwningPid,
-            };
-
-            unsafe {
-                // TCPConnEstatsData = 2: Data transfer stats
-                let mut rw_size: u32 = 0;
-                let ret = GetPerTcpConnectionEStats(
-                    &row2 as *const _ as *const _,
-                    TCP_ESTATS_TYPE(2), // TcpConnectionEstatsData
-                    None,
-                    0,
-                    0,
-                    None,
-                    0,
-                    &mut rw_size,
-                    None,
-                    0,
-                    0,
-                );
-
-                if ret != SOCKET_ERROR && rw_size > 0 {
-                    let mut rw_buf: Vec<u8> = vec![0; rw_size as usize];
-                    let ret2 = GetPerTcpConnectionEStats(
-                        &row2 as *const _ as *const _,
-                        TCP_ESTATS_TYPE(2),
-                        None,
-                        0,
-                        0,
-                        Some(rw_buf.as_mut_ptr() as *mut _),
-                        rw_size,
-                        &mut rw_size,
-                        None,
-                        0,
-                        0,
-                    );
-
-                    if ret2 != SOCKET_ERROR && rw_buf.len() >= 72 {
-                        // TCP_ESTATS_DATA_ROD_v0 structure:
-                        // BytesOut (8 bytes) at offset 56
-                        // BytesIn (8 bytes) at offset 64
-                        bytes_sent =
-                            u64::from_ne_bytes(rw_buf[56..64].try_into().unwrap_or([0; 8]));
-                        bytes_received =
-                            u64::from_ne_bytes(rw_buf[64..72].try_into().unwrap_or([0; 8]));
-                    }
-                }
-            }
-
             stats.push(SocketStats {
                 pid,
                 fd: 0,
                 protocol: SocketProtocol::TcpV4,
                 local_addr,
                 remote_addr,
-                bytes_sent,
-                bytes_received,
+                bytes_sent: 0,
+                bytes_received: 0,
             });
+        }
+
+        // Apply ETW per-PID byte counters.
+        // ETW gives aggregate per-PID counters, so we put them on the first socket.
+        // The frontend sums all sockets, giving the correct total.
+        if !stats.is_empty() {
+            let counters = crate::etw::get_net_io_counters(pid);
+            stats[0].bytes_sent = counters.bytes_sent;
+            stats[0].bytes_received = counters.bytes_received;
         }
 
         Ok(stats)
     }
 
     pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
-        use windows::Win32::NetworkManagement::IpHelper::{
-            GetPerTcpConnectionEStats, MIB_TCPROW2, TCP_ESTATS_TYPE,
-        };
-        use windows::Win32::Networking::WinSock::SOCKET_ERROR;
-
         let mut size: u32 = 0;
         unsafe {
             let _ = GetExtendedTcpTable(
@@ -1864,7 +1782,6 @@ mod innerWindows {
                 0,
             );
         }
-
         if size == 0 {
             return Ok(Vec::new());
         }
@@ -1886,7 +1803,6 @@ mod innerWindows {
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
-
             if row.dwOwningPid != pid {
                 continue;
             }
@@ -1905,63 +1821,6 @@ mod innerWindows {
 
             let state = tcp_state_from_windows(row.dwState);
 
-            let row2 = MIB_TCPROW2 {
-                dwState: row.dwState,
-                dwLocalAddr: row.dwLocalAddr,
-                dwLocalPort: row.dwLocalPort,
-                dwRemoteAddr: row.dwRemoteAddr,
-                dwRemotePort: row.dwRemotePort,
-                dwOwningPid: row.dwOwningPid,
-            };
-
-            let mut send_queue: u32 = 0;
-            let mut recv_queue: u32 = 0;
-
-            unsafe {
-                // TCPConnEstatsData = 2: use Data stats to estimate queue
-                let mut rw_size: u32 = 0;
-                let ret = GetPerTcpConnectionEStats(
-                    &row2 as *const _ as *const _,
-                    TCP_ESTATS_TYPE(2),
-                    None,
-                    0,
-                    0,
-                    None,
-                    0,
-                    &mut rw_size,
-                    None,
-                    0,
-                    0,
-                );
-
-                if ret != SOCKET_ERROR && rw_size > 0 {
-                    let mut rw_buf: Vec<u8> = vec![0; rw_size as usize];
-                    let ret2 = GetPerTcpConnectionEStats(
-                        &row2 as *const _ as *const _,
-                        TCP_ESTATS_TYPE(2),
-                        None,
-                        0,
-                        0,
-                        Some(rw_buf.as_mut_ptr() as *mut _),
-                        rw_size,
-                        &mut rw_size,
-                        None,
-                        0,
-                        0,
-                    );
-
-                    if ret2 != SOCKET_ERROR {
-                        // Use retransmit data as an approximation for send queue depth
-                        // TCP_ESTATS_DATA_ROD_v0: DataRetransSegs at offset 24 (u64)
-                        if rw_buf.len() >= 32 {
-                            let retrans =
-                                u64::from_ne_bytes(rw_buf[24..32].try_into().unwrap_or([0; 8]));
-                            send_queue = retrans.min(u32::MAX as u64) as u32;
-                        }
-                    }
-                }
-            }
-
             result.push(SocketQueueInfo {
                 pid,
                 fd: 0,
@@ -1969,13 +1828,12 @@ mod innerWindows {
                 local_addr,
                 remote_addr,
                 state,
-                recv_queue_bytes: recv_queue,
+                recv_queue_bytes: 0,
                 recv_queue_hiwat: 0,
-                send_queue_bytes: send_queue,
+                send_queue_bytes: 0,
                 send_queue_hiwat: 0,
             });
         }
-
         Ok(result)
     }
 }

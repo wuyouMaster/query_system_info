@@ -48,6 +48,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Kernel",
     "Wdk_System_Threading",
 ] }
+ferrisetw = "1.2"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

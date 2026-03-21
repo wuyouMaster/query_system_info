@@ -100,6 +100,8 @@
 pub mod cpu;
 pub mod disk;
 pub mod error;
+#[cfg(target_os = "windows")]
+pub mod etw;
 pub mod memory;
 pub mod process;
 pub mod socket;

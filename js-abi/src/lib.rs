@@ -4,7 +4,7 @@ use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
 use query_system_info::process::{
-    get_process_cpu_usage, get_process_io, list_processes, ProcessSocketTracker, ProcessTracker,
+    ProcessSocketTracker, ProcessTracker, get_process_cpu_usage, get_process_io, list_processes,
 };
 use query_system_info::socket::{
     get_all_connections, get_process_socket_queues, get_process_socket_stats, get_socket_summary,

@@ -4,7 +4,7 @@ use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
 use query_system_info::disk::get_disks;
 use query_system_info::memory::get_memory_info;
 use query_system_info::process::{
-    ProcessSocketTracker, ProcessTracker, get_process_io, list_processes,
+    get_process_cpu_usage, get_process_io, list_processes, ProcessSocketTracker, ProcessTracker,
 };
 use query_system_info::socket::{
     get_all_connections, get_process_socket_queues, get_process_socket_stats, get_socket_summary,
@@ -467,6 +467,16 @@ pub fn js_get_process_io(pid: f64) -> napi::Result<JsProcessIoInfo> {
         read_ops: stats.read_ops as f64,
         write_ops: stats.write_ops as f64,
     })
+}
+
+#[napi]
+pub fn js_get_process_cpu_usage(pid: f64, sample_secs: Option<f64>) -> napi::Result<f64> {
+    let dur = Duration::from_secs_f64(sample_secs.unwrap_or(0.5));
+    let usage = into_napi_result(
+        get_process_cpu_usage(pid as u32, dur),
+        &format!("get_process_cpu_usage({pid}) failed"),
+    )?;
+    Ok(usage)
 }
 
 #[napi]

@@ -319,6 +319,70 @@ pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
     ))
 }
 
+/// Get CPU usage percentage of a specific process (requires two samples with a delay).
+///
+/// Returns the process CPU usage as a percentage of total available CPU,
+/// where 100.0 means the process is using one full CPU core.
+///
+/// # Arguments
+/// * `pid` - Process ID to monitor
+/// * `sample_duration` - Duration between the two samples
+pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64> {
+    let num_cpus = crate::cpu::get_cpu_info()
+        .map(|info| info.logical_cores as f64)
+        .unwrap_or(1.0);
+
+    #[cfg(target_os = "linux")]
+    {
+        let cpu1 = linux::get_process_cpu_time_ns(pid)?;
+        thread::sleep(sample_duration);
+        let cpu2 = linux::get_process_cpu_time_ns(pid)?;
+
+        let cpu_delta_ns = cpu2.saturating_sub(cpu1);
+        let cpu_delta_s = cpu_delta_ns as f64 / 1_000_000_000.0;
+        let elapsed_s = sample_duration.as_secs_f64();
+        if elapsed_s < f64::EPSILON {
+            return Ok(0.0);
+        }
+        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let cpu1 = macos::get_process_cpu_time_ns(pid)?;
+        thread::sleep(sample_duration);
+        let cpu2 = macos::get_process_cpu_time_ns(pid)?;
+
+        let cpu_delta_ns = cpu2.saturating_sub(cpu1);
+        let cpu_delta_s = cpu_delta_ns as f64 / 1_000_000_000.0;
+        let elapsed_s = sample_duration.as_secs_f64();
+        if elapsed_s < f64::EPSILON {
+            return Ok(0.0);
+        }
+        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let cpu1 = innerWindows::get_process_cpu_time_ns(pid)?;
+        thread::sleep(sample_duration);
+        let cpu2 = innerWindows::get_process_cpu_time_ns(pid)?;
+
+        let cpu_delta_ns = cpu2.saturating_sub(cpu1);
+        let cpu_delta_s = cpu_delta_ns as f64 / 1_000_000_000.0;
+        let elapsed_s = sample_duration.as_secs_f64();
+        if elapsed_s < f64::EPSILON {
+            return Ok(0.0);
+        }
+        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err(SysInfoError::NotSupported(
+        "Unsupported platform".to_string(),
+    ))
+}
+
 // ============================================================================
 // Linux Implementation
 // ============================================================================
@@ -516,6 +580,32 @@ mod linux {
         }
 
         Ok(stats)
+    }
+
+    pub fn get_process_cpu_time_ns(pid: u32) -> Result<u64> {
+        let stat_path = format!("/proc/{}/stat", pid);
+        let stat =
+            fs::read_to_string(&stat_path).map_err(|_| SysInfoError::ProcessNotFound(pid))?;
+
+        let end = stat
+            .rfind(')')
+            .ok_or_else(|| SysInfoError::Parse("Invalid stat format".to_string()))?;
+        let rest = &stat[end + 2..];
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+
+        // utime is field 14 (index 12 after comm), stime is field 15 (index 13)
+        let utime: u64 = fields.get(12).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let stime: u64 = fields.get(13).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let total_ticks = utime + stime;
+
+        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+        if clk_tck == 0 {
+            return Err(SysInfoError::SysCall(
+                "sysconf(_SC_CLK_TCK) returned 0".to_string(),
+            ));
+        }
+
+        Ok(total_ticks * 1_000_000_000 / clk_tck)
     }
 }
 
@@ -843,6 +933,13 @@ mod macos {
         }
     }
 
+    pub fn get_process_cpu_time_ns(pid: u32) -> Result<u64> {
+        match pidinfo::<TaskInfo>(pid as i32, 0) {
+            Ok(info) => Ok(info.pti_total_user + info.pti_total_system),
+            Err(_) => Err(SysInfoError::ProcessNotFound(pid)),
+        }
+    }
+
     fn get_process_args(pid: u32) -> (String, Vec<String>) {
         let mut mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
         let mut size: usize = 0;
@@ -1072,6 +1169,10 @@ mod innerWindows {
         }
     }
 
+    fn filetime_to_u64(ft: &windows::Win32::Foundation::FILETIME) -> u64 {
+        ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64)
+    }
+
     pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
         use windows::Win32::System::Threading::{
             GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
@@ -1097,6 +1198,40 @@ mod innerWindows {
                 read_ops: io_counters.ReadOperationCount,
                 write_ops: io_counters.WriteOperationCount,
             })
+        }
+    }
+
+    pub fn get_process_cpu_time_ns(pid: u32) -> Result<u64> {
+        use windows::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).map_err(|_| {
+                SysInfoError::PermissionDenied(format!(
+                    "Cannot open process {pid} for CPU time query"
+                ))
+            })?;
+            let _guard = HandleGuard(handle);
+
+            let mut creation_time = windows::Win32::Foundation::FILETIME::default();
+            let mut exit_time = windows::Win32::Foundation::FILETIME::default();
+            let mut kernel_time = windows::Win32::Foundation::FILETIME::default();
+            let mut user_time = windows::Win32::Foundation::FILETIME::default();
+
+            GetProcessTimes(
+                handle,
+                &mut creation_time,
+                &mut exit_time,
+                &mut kernel_time,
+                &mut user_time,
+            )
+            .map_err(|e| SysInfoError::WindowsApi(format!("GetProcessTimes({pid}) failed: {e}")))?;
+
+            let kernel_ns = filetime_to_u64(&kernel_time) * 100;
+            let user_ns = filetime_to_u64(&user_time) * 100;
+
+            Ok(kernel_ns + user_ns)
         }
     }
 }
@@ -1172,5 +1307,15 @@ mod tests {
             called.load(Ordering::SeqCst),
             "Queue callback should have been called"
         );
+    }
+
+    #[test]
+    fn test_get_process_cpu_usage() {
+        let pid = std::process::id();
+        let usage = get_process_cpu_usage(pid, Duration::from_millis(500))
+            .expect("Failed to get process CPU usage");
+        println!("Process {} CPU usage: {:.2}%", pid, usage);
+        assert!(usage >= 0.0, "CPU usage should be non-negative");
+        assert!(usage <= 100.0, "CPU usage should not exceed 100%");
     }
 }

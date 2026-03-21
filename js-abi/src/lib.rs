@@ -1,13 +1,15 @@
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
-use query_system_info::cpu::{get_cpu_info, get_cpu_usage};
-use query_system_info::disk::get_disks;
+use query_system_info::cpu::{get_cpu_info, get_cpu_times, get_cpu_usage};
+use query_system_info::disk::{get_disk_io_stats, get_disks};
 use query_system_info::memory::get_memory_info;
 use query_system_info::process::{
-    ProcessSocketTracker, ProcessTracker, get_process_cpu_usage, get_process_io, list_processes,
+    ProcessQueueTracker, ProcessSocketTracker, ProcessTracker, get_process_cpu_usage,
+    get_process_io, list_processes,
 };
 use query_system_info::socket::{
     get_all_connections, get_process_socket_queues, get_process_socket_stats, get_socket_summary,
+    get_tcp_connections as get_tcp_conns, get_udp_sockets as get_udp_socks,
 };
 use query_system_info::types::SocketState;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -131,6 +133,33 @@ pub struct JsProcessTracker {
 #[napi]
 pub struct JsProcessSocketTracker {
     tracker: Arc<Mutex<Option<ProcessSocketTracker>>>,
+}
+
+#[napi]
+pub struct JsProcessQueueTracker {
+    tracker: Arc<Mutex<Option<ProcessQueueTracker>>>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsCpuTimes {
+    pub user: f64,
+    pub system: f64,
+    pub idle: f64,
+    pub nice: f64,
+    pub iowait: f64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsDiskIoStats {
+    pub device: String,
+    pub reads: f64,
+    pub writes: f64,
+    pub bytes_read: f64,
+    pub bytes_written: f64,
+    pub read_time_ms: f64,
+    pub write_time_ms: f64,
 }
 
 #[napi]
@@ -725,6 +754,117 @@ pub fn start_tracking_sockets(
     Ok(JsProcessSocketTracker {
         tracker: Arc::new(Mutex::new(Some(tracker))),
     })
+}
+
+#[napi]
+impl JsProcessQueueTracker {
+    #[napi]
+    pub fn stop(&self) {
+        if let Ok(mut tracker) = self.tracker.lock() {
+            if let Some(t) = tracker.take() {
+                t.stop();
+            }
+        }
+    }
+}
+
+#[napi]
+pub fn start_tracking_queues(
+    pid: f64,
+    callback: ThreadsafeFunction<Vec<JsSocketQueueInfo>>,
+) -> napi::Result<JsProcessQueueTracker> {
+    let tracker = into_napi_result(
+        query_system_info::process::start_tracking_queues(pid as u32, move |queues| {
+            let js_queues: Vec<JsSocketQueueInfo> = queues
+                .into_iter()
+                .map(|q| JsSocketQueueInfo {
+                    pid: q.pid as f64,
+                    fd: q.fd as f64,
+                    protocol: q.protocol.to_string(),
+                    local_addr: q.local_addr.to_string(),
+                    remote_addr: q.remote_addr.map(|a| a.to_string()),
+                    state: q.state.to_string(),
+                    recv_queue_bytes: q.recv_queue_bytes as f64,
+                    recv_queue_hiwat: q.recv_queue_hiwat as f64,
+                    send_queue_bytes: q.send_queue_bytes as f64,
+                    send_queue_hiwat: q.send_queue_hiwat as f64,
+                })
+                .collect();
+            callback.call(Ok(js_queues), ThreadsafeFunctionCallMode::NonBlocking);
+        }),
+        "start_tracking_queues failed",
+    )?;
+
+    Ok(JsProcessQueueTracker {
+        tracker: Arc::new(Mutex::new(Some(tracker))),
+    })
+}
+
+#[napi]
+pub fn js_get_cpu_times() -> napi::Result<Vec<JsCpuTimes>> {
+    let times = into_napi_result(get_cpu_times(), "get_cpu_times failed")?;
+    Ok(times
+        .into_iter()
+        .map(|t| JsCpuTimes {
+            user: t.user as f64,
+            system: t.system as f64,
+            idle: t.idle as f64,
+            nice: t.nice as f64,
+            iowait: t.iowait as f64,
+        })
+        .collect())
+}
+
+#[napi]
+pub fn js_get_disk_io_stats() -> napi::Result<Vec<JsDiskIoStats>> {
+    let stats = into_napi_result(get_disk_io_stats(), "get_disk_io_stats failed")?;
+    Ok(stats
+        .into_iter()
+        .map(|s| JsDiskIoStats {
+            device: s.device,
+            reads: s.reads as f64,
+            writes: s.writes as f64,
+            bytes_read: s.bytes_read as f64,
+            bytes_written: s.bytes_written as f64,
+            read_time_ms: s.read_time_ms as f64,
+            write_time_ms: s.write_time_ms as f64,
+        })
+        .collect())
+}
+
+fn connections_to_js(
+    connections: std::collections::HashMap<
+        SocketState,
+        Vec<query_system_info::types::SocketConnection>,
+    >,
+) -> Vec<JsSocketConnection> {
+    connections
+        .values()
+        .flatten()
+        .map(|c| JsSocketConnection {
+            protocol: c.protocol.to_string(),
+            local_addr: c.local_addr.to_string(),
+            remote_addr: c
+                .remote_addr
+                .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .to_string(),
+            state: c.state.to_string(),
+            pid: c.pid.unwrap_or(0) as f64,
+            inode: c.inode as f64,
+        })
+        .collect()
+}
+
+#[napi]
+pub fn get_tcp_connections() -> napi::Result<Vec<JsSocketConnection>> {
+    let connections = into_napi_result(get_tcp_conns(), "get_tcp_connections failed")?;
+    Ok(connections_to_js(connections))
+}
+
+#[napi]
+pub fn get_udp_sockets() -> napi::Result<Vec<JsSocketConnection>> {
+    let connections = into_napi_result(get_udp_socks(), "get_udp_sockets failed")?;
+    Ok(connections_to_js(connections))
 }
 
 #[cfg(test)]

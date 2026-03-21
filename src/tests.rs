@@ -3,6 +3,18 @@
 // Run: cargo test --lib
 
 // ============================================================================
+//  lib.rs
+// ============================================================================
+
+#[cfg(test)]
+mod test_lib {
+    #[test]
+    fn test_version_is_non_empty() {
+        assert!(!crate::VERSION.is_empty(), "VERSION should not be empty");
+    }
+}
+
+// ============================================================================
 //  types.rs
 // ============================================================================
 
@@ -98,6 +110,361 @@ mod test_types {
         let _ = format!("{}", SocketState::Closed);
         let _ = format!("{}", SocketState::Unknown);
     }
+
+    #[test]
+    fn test_cpu_info_defaults() {
+        let info = CpuInfo::default();
+        assert_eq!(info.physical_cores, 0);
+        assert_eq!(info.logical_cores, 0);
+        assert!(info.model_name.is_empty());
+        assert!(info.vendor.is_empty());
+        assert_eq!(info.frequency_mhz, 0);
+        assert_eq!(info.usage_percent, 0.0);
+        assert!(info.per_core_usage.is_empty());
+    }
+
+    #[test]
+    fn test_cpu_times_defaults() {
+        let t = CpuTimes::default();
+        assert_eq!(t.user, 0);
+        assert_eq!(t.system, 0);
+        assert_eq!(t.idle, 0);
+        assert_eq!(t.nice, 0);
+    }
+
+    #[test]
+    fn test_process_info_defaults() {
+        let p = ProcessInfo::default();
+        assert_eq!(p.pid, 0);
+        assert_eq!(p.ppid, 0);
+        assert!(p.name.is_empty());
+        assert_eq!(p.state, ProcessState::Unknown);
+        assert_eq!(p.memory_bytes, 0);
+    }
+
+    #[test]
+    fn test_process_io_stats_defaults() {
+        let io = ProcessIoStats::default();
+        assert_eq!(io.pid, 0);
+        assert_eq!(io.read_bytes, 0);
+        assert_eq!(io.write_bytes, 0);
+    }
+
+    #[test]
+    fn test_disk_io_stats_defaults() {
+        let stats = DiskIoStats::default();
+        assert!(stats.device.is_empty());
+        assert_eq!(stats.reads, 0);
+        assert_eq!(stats.writes, 0);
+        assert_eq!(stats.bytes_read, 0);
+        assert_eq!(stats.bytes_written, 0);
+    }
+
+    #[test]
+    fn test_socket_connection_fields() {
+        let conn = SocketConnection {
+            protocol: SocketProtocol::TcpV6,
+            local_addr: "[::1]:8080".parse().unwrap(),
+            remote_addr: Some("[::1]:9090".parse().unwrap()),
+            state: SocketState::Established,
+            pid: Some(42),
+            inode: 12345,
+        };
+        assert_eq!(conn.protocol, SocketProtocol::TcpV6);
+        assert_eq!(conn.pid, Some(42));
+        assert_eq!(conn.inode, 12345);
+        assert!(conn.remote_addr.is_some());
+    }
+
+    #[test]
+    fn test_socket_stats_fields() {
+        let stats = SocketStats {
+            pid: 100,
+            fd: 5,
+            protocol: SocketProtocol::TcpV4,
+            local_addr: "127.0.0.1:80".parse().unwrap(),
+            remote_addr: Some("127.0.0.1:12345".parse().unwrap()),
+            bytes_sent: 1024,
+            bytes_received: 2048,
+        };
+        assert_eq!(stats.pid, 100);
+        assert_eq!(stats.fd, 5);
+        assert_eq!(stats.bytes_sent, 1024);
+        assert_eq!(stats.bytes_received, 2048);
+    }
+
+    #[test]
+    fn test_socket_connection_event_fields() {
+        let event = SocketConnectionEvent {
+            protocol: SocketProtocol::UdpV4,
+            local_addr: "0.0.0.0:53".parse().unwrap(),
+            remote_addr: None,
+            state: SocketState::Listen,
+            pid: 999,
+            inode: 42,
+        };
+        assert_eq!(event.pid, 999);
+        assert_eq!(event.protocol, SocketProtocol::UdpV4);
+        assert!(event.remote_addr.is_none());
+    }
+
+    #[test]
+    fn test_socket_queue_info_fields() {
+        let q = SocketQueueInfo {
+            pid: 1,
+            fd: 3,
+            protocol: SocketProtocol::TcpV4,
+            local_addr: "127.0.0.1:80".parse().unwrap(),
+            remote_addr: Some("10.0.0.1:55555".parse().unwrap()),
+            state: SocketState::Established,
+            recv_queue_bytes: 512,
+            recv_queue_hiwat: 8192,
+            send_queue_bytes: 1024,
+            send_queue_hiwat: 16384,
+        };
+        assert_eq!(q.pid, 1);
+        assert_eq!(q.recv_queue_bytes, 512);
+        assert_eq!(q.send_queue_hiwat, 16384);
+    }
+
+    #[test]
+    fn test_child_process_event_fields() {
+        let event = ChildProcessEvent {
+            pid: 1234,
+            ppid: 1,
+            name: "test".to_string(),
+            cmdline: vec!["--flag".to_string(), "value".to_string()],
+            exe_path: "/usr/bin/test".to_string(),
+            start_time: 1700000000,
+        };
+        assert_eq!(event.pid, 1234);
+        assert_eq!(event.ppid, 1);
+        assert_eq!(event.name, "test");
+        assert_eq!(event.cmdline.len(), 2);
+    }
+
+    #[test]
+    fn test_socket_state_try_from_i32() {
+        assert_eq!(SocketState::try_from(0), Ok(SocketState::Established));
+        assert_eq!(SocketState::try_from(1), Ok(SocketState::SynSent));
+        assert_eq!(SocketState::try_from(2), Ok(SocketState::SynReceived));
+        assert_eq!(SocketState::try_from(3), Ok(SocketState::FinWait1));
+        assert_eq!(SocketState::try_from(4), Ok(SocketState::FinWait2));
+        assert_eq!(SocketState::try_from(5), Ok(SocketState::TimeWait));
+        assert_eq!(SocketState::try_from(6), Ok(SocketState::Closed));
+        assert_eq!(SocketState::try_from(7), Ok(SocketState::CloseWait));
+        assert_eq!(SocketState::try_from(8), Ok(SocketState::LastAck));
+        assert_eq!(SocketState::try_from(9), Ok(SocketState::Listen));
+        assert_eq!(SocketState::try_from(10), Ok(SocketState::Closing));
+        assert_eq!(SocketState::try_from(11), Ok(SocketState::Unknown));
+        assert_eq!(SocketState::try_from(99), Err(()));
+    }
+
+    #[test]
+    fn test_socket_state_try_from_str() {
+        assert_eq!(
+            SocketState::try_from("ESTABLISHED"),
+            Ok(SocketState::Established)
+        );
+        assert_eq!(
+            SocketState::try_from("established"),
+            Ok(SocketState::Established)
+        );
+        assert_eq!(SocketState::try_from("LISTEN"), Ok(SocketState::Listen));
+        assert_eq!(SocketState::try_from("listen"), Ok(SocketState::Listen));
+        assert_eq!(
+            SocketState::try_from("TIME_WAIT"),
+            Ok(SocketState::TimeWait)
+        );
+        assert_eq!(
+            SocketState::try_from("CLOSE_WAIT"),
+            Ok(SocketState::CloseWait)
+        );
+        assert_eq!(SocketState::try_from("SYN_SENT"), Ok(SocketState::SynSent));
+        assert_eq!(
+            SocketState::try_from("SYN_RECV"),
+            Ok(SocketState::SynReceived)
+        );
+        assert_eq!(
+            SocketState::try_from("FIN_WAIT1"),
+            Ok(SocketState::FinWait1)
+        );
+        assert_eq!(
+            SocketState::try_from("FIN_WAIT2"),
+            Ok(SocketState::FinWait2)
+        );
+        assert_eq!(SocketState::try_from("LAST_ACK"), Ok(SocketState::LastAck));
+        assert_eq!(SocketState::try_from("CLOSING"), Ok(SocketState::Closing));
+        assert_eq!(SocketState::try_from("UNKNOWN"), Ok(SocketState::Unknown));
+        assert_eq!(SocketState::try_from("INVALID"), Err(()));
+    }
+
+    #[test]
+    fn test_process_state_display() {
+        assert_eq!(format!("{}", ProcessState::Running), "Running");
+        assert_eq!(format!("{}", ProcessState::Sleeping), "Sleeping");
+        assert_eq!(format!("{}", ProcessState::Stopped), "Stopped");
+        assert_eq!(format!("{}", ProcessState::Zombie), "Zombie");
+        assert_eq!(format!("{}", ProcessState::Idle), "Idle");
+        assert_eq!(format!("{}", ProcessState::Unknown), "Unknown");
+    }
+
+    #[test]
+    fn test_socket_protocol_display() {
+        assert_eq!(format!("{}", SocketProtocol::TcpV4), "tcp");
+        assert_eq!(format!("{}", SocketProtocol::TcpV6), "tcp6");
+        assert_eq!(format!("{}", SocketProtocol::UdpV4), "udp");
+        assert_eq!(format!("{}", SocketProtocol::UdpV6), "udp6");
+    }
+
+    #[test]
+    fn test_memory_info_fields() {
+        let m = MemoryInfo {
+            total: 16_000_000_000,
+            available: 8_000_000_000,
+            used: 8_000_000_000,
+            free: 4_000_000_000,
+            usage_percent: 50.0,
+            swap_total: 2_000_000_000,
+            swap_used: 500_000_000,
+            swap_free: 1_500_000_000,
+            cached: 2_000_000_000,
+            buffers: 500_000_000,
+        };
+        assert_eq!(m.total, 16_000_000_000);
+        assert_eq!(m.usage_percent, 50.0);
+        assert_eq!(m.swap_total, 2_000_000_000);
+    }
+
+    #[test]
+    fn test_cpu_times_fields() {
+        let t = CpuTimes {
+            user: 1000,
+            system: 500,
+            idle: 3000,
+            nice: 10,
+            iowait: 50,
+            irq: 5,
+            softirq: 10,
+            interrupt: 20,
+            dpc: 15,
+        };
+        assert_eq!(t.user, 1000);
+        assert_eq!(t.idle, 3000);
+        assert_eq!(t.nice, 10);
+    }
+
+    #[test]
+    fn test_process_info_fields() {
+        let p = ProcessInfo {
+            pid: 1234,
+            ppid: 1,
+            name: "myprocess".to_string(),
+            exe_path: "/usr/bin/myprocess".to_string(),
+            cmdline: vec!["myprocess".to_string(), "--arg".to_string()],
+            state: ProcessState::Running,
+            memory_bytes: 100_000_000,
+            virtual_memory: 200_000_000,
+            cpu_percent: 5.5,
+            threads: 4,
+            start_time: 1700000000,
+            uid: 1000,
+            username: "user".to_string(),
+        };
+        assert_eq!(p.pid, 1234);
+        assert_eq!(p.name, "myprocess");
+        assert_eq!(p.state, ProcessState::Running);
+        assert_eq!(p.threads, 4);
+    }
+
+    #[test]
+    fn test_process_io_stats_fields() {
+        let io = ProcessIoStats {
+            pid: 1234,
+            read_bytes: 1_000_000,
+            write_bytes: 2_000_000,
+            read_chars: 3_000_000,
+            write_chars: 4_000_000,
+            read_ops: 100,
+            write_ops: 200,
+        };
+        assert_eq!(io.pid, 1234);
+        assert_eq!(io.read_bytes, 1_000_000);
+        assert_eq!(io.write_ops, 200);
+    }
+
+    #[test]
+    fn test_disk_io_stats_fields() {
+        let stats = DiskIoStats {
+            device: "sda".to_string(),
+            reads: 1000,
+            writes: 500,
+            bytes_read: 50_000_000,
+            bytes_written: 25_000_000,
+            read_time_ms: 5000,
+            write_time_ms: 3000,
+        };
+        assert_eq!(stats.device, "sda");
+        assert_eq!(stats.reads, 1000);
+        assert_eq!(stats.bytes_written, 25_000_000);
+    }
+
+    #[test]
+    fn test_socket_state_hash_eq() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(SocketState::Established);
+        set.insert(SocketState::Listen);
+        set.insert(SocketState::Established);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_socket_protocol_hash_eq() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(SocketProtocol::TcpV4);
+        set.insert(SocketProtocol::TcpV6);
+        set.insert(SocketProtocol::TcpV4);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_socket_state_summary_all_states() {
+        let conns = vec![
+            SocketConnection {
+                protocol: SocketProtocol::TcpV4,
+                local_addr: "0.0.0.0:1".parse().unwrap(),
+                remote_addr: None,
+                state: SocketState::Established,
+                pid: None,
+                inode: 0,
+            },
+            SocketConnection {
+                protocol: SocketProtocol::TcpV4,
+                local_addr: "0.0.0.0:2".parse().unwrap(),
+                remote_addr: None,
+                state: SocketState::TimeWait,
+                pid: None,
+                inode: 0,
+            },
+            SocketConnection {
+                protocol: SocketProtocol::TcpV4,
+                local_addr: "0.0.0.0:3".parse().unwrap(),
+                remote_addr: None,
+                state: SocketState::CloseWait,
+                pid: None,
+                inode: 0,
+            },
+        ];
+        let refs: Vec<&SocketConnection> = conns.iter().collect();
+        let summary = SocketStateSummary::from_connections(&refs);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.established, 1);
+        assert_eq!(summary.time_wait, 1);
+        assert_eq!(summary.close_wait, 1);
+        assert_eq!(summary.listen, 0);
+    }
 }
 
 // ============================================================================
@@ -137,6 +504,46 @@ mod test_util {
         let buf: [u8; 4] = (-42i32).to_ne_bytes();
         assert_eq!(read_i32(&buf, 0), Some(-42));
     }
+
+    #[test]
+    fn test_read_u32_as_usize_out_of_bounds() {
+        let buf: [u8; 3] = [0x01, 0x02, 0x03];
+        assert_eq!(read_u32_as_usize(&buf, 0), None);
+        let buf2: [u8; 6] = [0; 6];
+        assert_eq!(read_u32_as_usize(&buf2, 4), None);
+    }
+
+    #[test]
+    fn test_read_i32_out_of_bounds() {
+        let buf: [u8; 3] = [0x01, 0x02, 0x03];
+        assert_eq!(read_i32(&buf, 0), None);
+        let buf2: [u8; 6] = [0; 6];
+        assert_eq!(read_i32(&buf2, 4), None);
+    }
+
+    #[test]
+    fn test_read_u32_empty_buffer() {
+        let buf: [u8; 0] = [];
+        assert_eq!(read_u32(&buf, 0), None);
+    }
+
+    #[test]
+    fn test_read_i32_zero() {
+        let buf: [u8; 4] = [0, 0, 0, 0];
+        assert_eq!(read_i32(&buf, 0), Some(0));
+    }
+
+    #[test]
+    fn test_read_u32_max_value() {
+        let buf: [u8; 4] = u32::MAX.to_ne_bytes();
+        assert_eq!(read_u32(&buf, 0), Some(u32::MAX));
+    }
+
+    #[test]
+    fn test_read_i32_min_value() {
+        let buf: [u8; 4] = i32::MIN.to_ne_bytes();
+        assert_eq!(read_i32(&buf, 0), Some(i32::MIN));
+    }
 }
 
 // ============================================================================
@@ -163,6 +570,70 @@ mod test_error {
         let err = SysInfoError::NotSupported("test".to_string());
         let msg = format!("{}", err);
         assert!(msg.contains("Not supported"));
+    }
+
+    #[test]
+    fn test_error_parse_variant() {
+        let err = SysInfoError::Parse("invalid number".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("Parse error"));
+        assert!(msg.contains("invalid number"));
+    }
+
+    #[test]
+    fn test_error_syscall_variant() {
+        let err = SysInfoError::SysCall("getrlimit".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("System call failed"));
+        assert!(msg.contains("getrlimit"));
+    }
+
+    #[test]
+    fn test_error_permission_denied_variant() {
+        let err = SysInfoError::PermissionDenied("/proc/1/mem".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("Permission denied"));
+        assert!(msg.contains("/proc/1/mem"));
+    }
+
+    #[test]
+    fn test_error_process_not_found_variant() {
+        let err = SysInfoError::ProcessNotFound(99999);
+        let msg = format!("{}", err);
+        assert!(msg.contains("Process not found"));
+        assert!(msg.contains("99999"));
+    }
+
+    #[test]
+    fn test_error_netlink_variant() {
+        let err = SysInfoError::Netlink("connection timeout".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("Netlink error"));
+        assert!(msg.contains("connection timeout"));
+    }
+
+    #[test]
+    fn test_error_windows_api_variant() {
+        let err = SysInfoError::WindowsApi("GetExtendedTcpTable".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("Windows API error"));
+        assert!(msg.contains("GetExtendedTcpTable"));
+    }
+
+    #[test]
+    fn test_error_debug_format() {
+        let err = SysInfoError::Parse("test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Parse"));
+    }
+
+    #[test]
+    fn test_error_process_not_found_pid() {
+        let err = SysInfoError::ProcessNotFound(42);
+        match err {
+            SysInfoError::ProcessNotFound(pid) => assert_eq!(pid, 42),
+            _ => panic!("Expected ProcessNotFound"),
+        }
     }
 }
 

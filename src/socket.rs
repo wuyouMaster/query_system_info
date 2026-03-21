@@ -1772,8 +1772,9 @@ mod innerWindows {
 
     pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>> {
         use windows::Win32::NetworkManagement::IpHelper::{
-            GetPerTcpConnectionEStats, SetPerTcpConnectionEStats, TCP_ESTATS_SEND_BUFF_ROD_v0,
-            TCP_ESTATS_SEND_BUFF_RW_v0, TcpConnectionEstatsSendBuff, MIB_TCPROW_LH,
+            GetPerTcpConnectionEStats, SetPerTcpConnectionEStats, TCP_ESTATS_REC_ROD_v0,
+            TCP_ESTATS_REC_RW_v0, TCP_ESTATS_SEND_BUFF_ROD_v0, TCP_ESTATS_SEND_BUFF_RW_v0,
+            TcpConnectionEstatsRec, TcpConnectionEstatsSendBuff, MIB_TCPROW_LH,
         };
 
         let mut size: u32 = 0;
@@ -1805,7 +1806,8 @@ mod innerWindows {
 
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
         let mut result = Vec::new();
-        let rod_size = std::mem::size_of::<TCP_ESTATS_SEND_BUFF_ROD_v0>();
+        let send_rod_size = std::mem::size_of::<TCP_ESTATS_SEND_BUFF_ROD_v0>();
+        let rec_rod_size = std::mem::size_of::<TCP_ESTATS_REC_ROD_v0>();
 
         for i in 0..table.dwNumEntries as usize {
             let row = unsafe { &*((table.table.as_ptr() as *const MIB_TCPROW_OWNER_PID).add(i)) };
@@ -1833,51 +1835,94 @@ mod innerWindows {
 
             unsafe {
                 // Enable EStats SendBuff collection
-                let rw = TCP_ESTATS_SEND_BUFF_RW_v0 {
+                let send_rw = TCP_ESTATS_SEND_BUFF_RW_v0 {
                     EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
                 };
-                let set_ret = SetPerTcpConnectionEStats(
+                let send_set_ret = SetPerTcpConnectionEStats(
                     tcp_row_ptr,
                     TcpConnectionEstatsSendBuff,
                     std::slice::from_raw_parts(
-                        &rw as *const _ as *const u8,
+                        &send_rw as *const _ as *const u8,
                         std::mem::size_of::<TCP_ESTATS_SEND_BUFF_RW_v0>(),
                     ),
                     0,
                     0,
                 );
-                if set_ret != 0 {
-                    eprintln!("[QueueStats] SetPerTcpConnectionEStats returned {set_ret}");
+                if send_set_ret != 0 {
+                    eprintln!(
+                        "[QueueStats] SetPerTcpConnectionEStats(SendBuff) returned {send_set_ret}"
+                    );
                 }
 
-                // Read ROD data for queue info
-                let mut rod_buf = vec![0u8; rod_size];
-                let ret = GetPerTcpConnectionEStats(
+                // Enable EStats Rec collection
+                let rec_rw = TCP_ESTATS_REC_RW_v0 {
+                    EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
+                };
+                let rec_set_ret = SetPerTcpConnectionEStats(
+                    tcp_row_ptr,
+                    TcpConnectionEstatsRec,
+                    std::slice::from_raw_parts(
+                        &rec_rw as *const _ as *const u8,
+                        std::mem::size_of::<TCP_ESTATS_REC_RW_v0>(),
+                    ),
+                    0,
+                    0,
+                );
+                if rec_set_ret != 0 {
+                    eprintln!("[QueueStats] SetPerTcpConnectionEStats(Rec) returned {rec_set_ret}");
+                }
+
+                // Read SendBuff ROD
+                let mut send_rod_buf = vec![0u8; send_rod_size];
+                let send_ret = GetPerTcpConnectionEStats(
                     tcp_row_ptr,
                     TcpConnectionEstatsSendBuff,
                     None,
                     0,
                     None,
                     0,
-                    Some(rod_buf.as_mut_slice()),
+                    Some(send_rod_buf.as_mut_slice()),
                     0,
                 );
+                eprintln!("[QueueStats] GetPerTcpConnectionEStats(SendBuff) returned {send_ret} for {local_ip}:{local_port}");
 
-                eprintln!("[QueueStats] GetPerTcpConnectionEStats returned {ret} for {local_ip}:{local_port}");
-
-                if ret == 0 {
+                if send_ret == 0 {
                     let rod = std::ptr::read_unaligned(
-                        rod_buf.as_ptr() as *const TCP_ESTATS_SEND_BUFF_ROD_v0
+                        send_rod_buf.as_ptr() as *const TCP_ESTATS_SEND_BUFF_ROD_v0
                     );
-                    // CurAppWQueue: app data queued for transmission
-                    // CurRetxQueue: retransmit queue
                     let app_queue = rod.CurAppWQueue as u64;
                     let retx_queue = rod.CurRetxQueue as u64;
                     send_queue = (app_queue + retx_queue).min(u32::MAX as u64) as u32;
-                    recv_queue = 0;
                     eprintln!(
                         "[QueueStats]   CurAppWQueue={} CurRetxQueue={} send_queue={}",
                         rod.CurAppWQueue, rod.CurRetxQueue, send_queue
+                    );
+                }
+
+                // Read Rec ROD
+                let mut rec_rod_buf = vec![0u8; rec_rod_size];
+                let rec_ret = GetPerTcpConnectionEStats(
+                    tcp_row_ptr,
+                    TcpConnectionEstatsRec,
+                    None,
+                    0,
+                    None,
+                    0,
+                    Some(rec_rod_buf.as_mut_slice()),
+                    0,
+                );
+                eprintln!("[QueueStats] GetPerTcpConnectionEStats(Rec) returned {rec_ret} for {local_ip}:{local_port}");
+
+                if rec_ret == 0 {
+                    let rod = std::ptr::read_unaligned(
+                        rec_rod_buf.as_ptr() as *const TCP_ESTATS_REC_ROD_v0
+                    );
+                    let app_r_queue = rod.CurAppRQueue as u64;
+                    let reasm_queue = rod.CurReasmQueue as u64;
+                    recv_queue = (app_r_queue + reasm_queue).min(u32::MAX as u64) as u32;
+                    eprintln!(
+                        "[QueueStats]   CurAppRQueue={} CurReasmQueue={} recv_queue={}",
+                        rod.CurAppRQueue, rod.CurReasmQueue, recv_queue
                     );
                 }
             }

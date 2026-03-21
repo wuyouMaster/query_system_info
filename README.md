@@ -36,6 +36,12 @@
 | **磁盘信息** | 设备名、挂载点、文件系统类型、总容量、已用、可用、使用率 |
 | **磁盘 I/O** | 设备级读写次数、读写字节数、读写耗时 |
 | **网络套接字** | TCP/UDP 连接列表（IPv4/IPv6）、连接状态分类、状态汇总 |
+| **进程 I/O** | 进程级读写字节数、读写操作次数 |
+| **进程 CPU** | 进程级 CPU 使用率（支持采样间隔） |
+| **Socket I/O** | 单个 socket 的发送/接收字节数 |
+| **Socket 队列** | 接收/发送队列当前字节数及高水位线 |
+| **进程追踪** | 子进程追踪、socket 连接追踪、队列追踪 |
+| **进程管理** | 跨平台杀死进程（SIGKILL/TerminateProcess） |
 | **系统汇总** | 一次调用获取全部系统信息快照 |
 
 ---
@@ -107,6 +113,11 @@ query_system_info/
 | `SocketProtocol` | 协议类型枚举：TcpV4 / TcpV6 / UdpV4 / UdpV6 |
 | `SocketState` | 连接状态枚举：Established / Listen / TimeWait / CloseWait 等 11 种状态 |
 | `SocketStateSummary` | 各状态连接数的汇总统计 |
+| `ProcessIoStats` | 进程 I/O 统计：读写字节数、读写操作次数 |
+| `SocketStats` | 单个 socket 的 I/O 统计：发送/接收字节数 |
+| `SocketQueueInfo` | Socket 队列信息：接收/发送队列字节数及高水位线 |
+| `SocketConnectionEvent` | Socket 连接事件：用于追踪新连接 |
+| `ChildProcessEvent` | 子进程事件：用于追踪新创建的子进程 |
 
 ---
 
@@ -156,10 +167,22 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>>
 ```rust
 pub fn list_processes() -> Result<Vec<ProcessInfo>>
 pub fn get_process_info(pid: u32) -> Result<ProcessInfo>
+pub fn get_process_io(pid: u32) -> Result<ProcessIoStats>
+pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64>
+pub fn kill_process(pid: u32) -> Result<()>
+pub fn start_tracking_children(pid: u32, callback: impl Fn(ChildProcessEvent)) -> Result<ProcessTracker>
+pub fn start_tracking_sockets(pid: u32, callback: impl Fn(SocketConnectionEvent)) -> Result<ProcessSocketTracker>
+pub fn start_tracking_queues(pid: u32, callback: impl Fn(Vec<SocketQueueInfo>)) -> Result<ProcessQueueTracker>
 ```
 
 - `list_processes`：枚举系统中所有当前运行的进程。
 - `get_process_info`：查询指定 PID 的进程详情。
+- `get_process_io`：获取指定进程的 I/O 统计（读写字节数、操作次数）。
+- `get_process_cpu_usage`：通过两次采样计算指定进程的 CPU 使用率。
+- `kill_process`：跨平台杀死进程（Unix 发送 SIGKILL，Windows 调用 TerminateProcess）。
+- `start_tracking_children`：持续追踪指定进程的所有子进程，新子进程创建时触发回调。
+- `start_tracking_sockets`：持续追踪指定进程的新 socket 连接。
+- `start_tracking_queues`：持续追踪指定进程所有 socket 的接收/发送队列状态。
 
 Linux 实现从 `/proc/[pid]/stat`、`/proc/[pid]/status`、`/proc/[pid]/cmdline` 和 `/proc/[pid]/exe` 读取信息；macOS 使用 `sysctl KERN_PROC`；Windows 使用 `EnumProcesses` + `OpenProcess`。
 
@@ -184,6 +207,9 @@ pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection
 pub fn get_udp_sockets()     -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 pub fn get_all_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 pub fn get_socket_summary()  -> Result<SocketStateSummary>
+pub fn get_connections_by_pid(pid: u32) -> Result<Vec<SocketConnectionEvent>>
+pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>>
+pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>>
 
 // 细粒度查询
 pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
@@ -193,6 +219,11 @@ pub fn get_udp6_sockets()     -> Result<HashMap<SocketState, Vec<SocketConnectio
 ```
 
 返回值以 `SocketState` 为 key 的 `HashMap` 组织，方便按状态快速过滤连接列表。`get_socket_summary` 返回所有状态的连接数统计。
+
+新增功能：
+- `get_connections_by_pid`：获取指定进程的所有 socket 连接。
+- `get_process_socket_stats`：获取指定进程的 socket I/O 统计（发送/接收字节数）。
+- `get_process_socket_queues`：获取指定进程所有 socket 的接收/发送队列状态。
 
 ---
 
@@ -217,6 +248,23 @@ pub fn get_system_summary() -> Result<SystemSummary>
 
 所有数值在 JavaScript 侧均以 `number`（`f64`）类型表示以规避 JS 整型溢出问题。
 
+新增函数：
+- `jsGetProcessIo(pid)`: 获取进程 I/O 统计
+- `jsGetProcessCpuUsage(pid, sampleSecs)`: 获取进程 CPU 使用率
+- `jsGetProcessSocketStats(pid)`: 获取进程 socket I/O 统计
+- `jsGetProcessSocketQueues(pid)`: 获取进程 socket 队列信息
+- `startTrackingSockets(pid, callback)`: 追踪进程 socket 连接
+- `startTrackingQueues(pid, callback)`: 追踪进程 socket 队列
+- `killProcess(pid)`: 杀死进程
+- `listDir(path)`: 列出目录内容
+- `getTcpConnections()`: 获取 TCP 连接列表
+- `getUdpSockets()`: 获取 UDP 套接字列表
+- `getConnectionByPid(pid)`: 按 PID 查找连接
+- `getConnectionByInode(inode)`: 按 inode 查找连接
+- `getConnectionByLocalAddr(addr)`: 按本地地址查找连接
+- `getConnectionByRemoteAddr(addr)`: 按远程地址查找连接
+- `getConnectionByState(state)`: 按状态过滤连接
+
 ---
 
 ### `py-abi/` — Python 绑定
@@ -225,6 +273,20 @@ pub fn get_system_summary() -> Result<SystemSummary>
 
 - `PySystemSummary` 类：同 JS 绑定，一次性采集所有系统信息。
 - 独立函数：`get_connections`、`get_processes`、`get_process_count`、`get_process_by_pid`、`get_connection_by_pid`、`get_connection_by_inode`、`get_connection_by_local_addr`、`get_connection_by_remote_addr`、`get_connection_by_state` 等。
+
+新增函数：
+- `get_process_io(pid)`: 获取进程 I/O 统计
+- `get_process_cpu_usage(pid, sample_duration)`: 获取进程 CPU 使用率
+- `get_process_socket_stats(pid)`: 获取进程 socket I/O 统计
+- `get_process_socket_queues(pid)`: 获取进程 socket 队列信息
+- `start_tracking_sockets(pid, callback)`: 追踪进程 socket 连接
+- `start_tracking_queues(pid, callback)`: 追踪进程 socket 队列
+- `kill_process(pid)`: 杀死进程
+- `list_dir(path)`: 列出目录内容
+- `get_tcp_connections()`: 获取 TCP 连接列表
+- `get_udp_sockets()`: 获取 UDP 套接字列表
+- `py_get_cpu_times()`: 获取 CPU 时间片数据
+- `py_get_disk_io_stats()`: 获取磁盘 I/O 统计
 
 ---
 
@@ -338,6 +400,36 @@ let tracker = process::start_tracking_children(1234, |child| {
 })?;
 // 停止追踪
 tracker.stop();
+
+// 追踪进程的 socket 连接
+let socket_tracker = process::start_tracking_sockets(std::process::id(), |event| {
+    println!("新连接: {} {} -> {:?} [{}]", 
+        event.protocol, event.local_addr, event.remote_addr, event.state);
+})?;
+std::thread::sleep(Duration::from_millis(500));
+socket_tracker.stop();
+
+// 追踪 socket 队列状态
+let queue_tracker = process::start_tracking_queues(std::process::id(), |queues| {
+    for q in &queues {
+        println!("fd {}: recv={} send={}", q.fd, q.recv_queue_bytes, q.send_queue_bytes);
+    }
+})?;
+std::thread::sleep(Duration::from_millis(500));
+queue_tracker.stop();
+
+// 获取进程 I/O 统计
+let io_stats = process::get_process_io(std::process::id())?;
+println!("读: {} MB, 写: {} MB", 
+    io_stats.read_bytes / 1024 / 1024, 
+    io_stats.write_bytes / 1024 / 1024);
+
+// 获取进程 CPU 使用率
+let cpu_usage = process::get_process_cpu_usage(std::process::id(), Duration::from_millis(500))?;
+println!("进程 CPU 使用率: {:.1}%", cpu_usage);
+
+// 杀死进程（需要适当权限）
+// process::kill_process(1234)?;
 ```
 
 #### 磁盘信息
@@ -401,6 +493,27 @@ if let Some(established) = tcp.get(&SocketState::Established) {
     for conn in established {
         println!("{} {} -> {:?}", conn.protocol, conn.local_addr, conn.remote_addr);
     }
+}
+
+// 获取指定进程的 socket 连接
+let pid = std::process::id();
+let pid_conns = socket::get_connections_by_pid(pid)?;
+println!("进程 {} 有 {} 个连接", pid, pid_conns.len());
+
+// 获取进程 socket I/O 统计
+let socket_stats = socket::get_process_socket_stats(pid)?;
+for stat in &socket_stats {
+    println!("{}: 发送 {} MB, 接收 {} MB", 
+        stat.local_addr, 
+        stat.bytes_sent / 1024 / 1024, 
+        stat.bytes_received / 1024 / 1024);
+}
+
+// 获取进程 socket 队列信息
+let queues = socket::get_process_socket_queues(pid)?;
+for q in &queues {
+    println!("{}: recv_queue={} send_queue={}", 
+        q.local_addr, q.recv_queue_bytes, q.send_queue_bytes);
 }
 ```
 
@@ -534,6 +647,43 @@ const tracker = sysinfo.startTrackingChildren(1234, (child) => {
 });
 // 停止追踪
 tracker.stop();
+
+// ---- Socket 连接追踪 ----
+const socketTracker = sysinfo.startTrackingSockets(1234, (event) => {
+    console.log(`新连接: ${event.protocol} ${event.localAddr} -> ${event.remoteAddr}`);
+});
+// 停止追踪
+socketTracker.stop();
+
+// ---- Socket 队列追踪 ----
+const queueTracker = sysinfo.startTrackingQueues(1234, (queues) => {
+    console.log(`队列更新: ${queues.length} 个 socket`);
+});
+// 停止追踪
+queueTracker.stop();
+
+// ---- 获取进程 I/O 统计 ----
+const ioStats = sysinfo.jsGetProcessIo(1234);
+console.log(`读: ${ioStats.readBytes / 1024 / 1024} MB, 写: ${ioStats.writeBytes / 1024 / 1024} MB`);
+
+// ---- 获取进程 CPU 使用率 ----
+const cpuUsage = sysinfo.jsGetProcessCpuUsage(1234, 0.5);
+console.log(`进程 CPU 使用率: ${cpuUsage.toFixed(1)}%`);
+
+// ---- 获取进程 socket 统计 ----
+const socketStats = sysinfo.jsGetProcessSocketStats(1234);
+console.log(`Socket 统计: ${socketStats.length} 个`);
+
+// ---- 获取进程 socket 队列 ----
+const socketQueues = sysinfo.jsGetProcessSocketQueues(1234);
+console.log(`Socket 队列: ${socketQueues.length} 个`);
+
+// ---- 杀死进程 ----
+// sysinfo.killProcess(1234);
+
+// ---- 列出目录 ----
+const entries = sysinfo.listDir('/tmp');
+console.log(`目录内容: ${entries.length} 项`);
 ```
 
 ---
@@ -611,6 +761,57 @@ def on_child(child):
 tracker = sysinfo.start_tracking_children(1234, on_child)
 # 停止追踪
 tracker.stop()
+
+# ---- Socket 连接追踪 ----
+def on_socket(event):
+    print(f"新连接: {event['protocol']} {event['local_addr']} -> {event['remote_addr']}")
+
+socket_tracker = sysinfo.start_tracking_sockets(1234, on_socket)
+# 停止追踪
+socket_tracker.stop()
+
+# ---- Socket 队列追踪 ----
+def on_queues(queues):
+    print(f"队列更新: {len(queues)} 个 socket")
+
+queue_tracker = sysinfo.start_tracking_queues(1234, on_queues)
+# 停止追踪
+queue_tracker.stop()
+
+# ---- 获取进程 I/O 统计 ----
+io_stats = sysinfo.get_process_io(1234)
+print(f"读: {io_stats.read_bytes // 1024 // 1024} MB, 写: {io_stats.write_bytes // 1024 // 1024} MB")
+
+# ---- 获取进程 CPU 使用率 ----
+cpu_usage = sysinfo.get_process_cpu_usage(1234, 500)
+print(f"进程 CPU 使用率: {cpu_usage:.1f}%")
+
+# ---- 获取进程 socket 统计 ----
+socket_stats = sysinfo.get_process_socket_stats(1234)
+print(f"Socket 统计: {len(socket_stats)} 个")
+
+# ---- 获取进程 socket 队列 ----
+socket_queues = sysinfo.get_process_socket_queues(1234)
+print(f"Socket 队列: {len(socket_queues)} 个")
+
+# ---- 杀死进程 ----
+# sysinfo.kill_process(1234)
+
+# ---- 列出目录 ----
+entries = sysinfo.list_dir('/tmp')
+print(f"目录内容: {len(entries)} 项")
+
+# ---- 获取 TCP/UDP 连接 ----
+tcp_conns = sysinfo.get_tcp_connections()
+udp_socks = sysinfo.get_udp_sockets()
+
+# ---- 获取 CPU 时间片 ----
+cpu_times = sysinfo.py_get_cpu_times()
+print(f"CPU 时间片: {len(cpu_times)} 个核心")
+
+# ---- 获取磁盘 I/O 统计 ----
+disk_io = sysinfo.py_get_disk_io_stats()
+print(f"磁盘 I/O: {len(disk_io)} 个设备")
 ```
 
 ---
@@ -673,7 +874,12 @@ make all
 |------|----------|------|
 | `list_processes()` | `Result<Vec<ProcessInfo>>` | 列举所有进程 |
 | `get_process_info(pid)` | `Result<ProcessInfo>` | 获取指定 PID 进程信息 |
+| `get_process_io(pid)` | `Result<ProcessIoStats>` | 获取进程 I/O 统计 |
+| `get_process_cpu_usage(pid, duration)` | `Result<f64>` | 获取进程 CPU 使用率（%） |
+| `kill_process(pid)` | `Result<()>` | 杀死指定进程 |
 | `start_tracking_children(pid, callback)` | `Result<ProcessTracker>` | 持续追踪指定进程的所有子进程 |
+| `start_tracking_sockets(pid, callback)` | `Result<ProcessSocketTracker>` | 持续追踪指定进程的新 socket 连接 |
+| `start_tracking_queues(pid, callback)` | `Result<ProcessQueueTracker>` | 持续追踪指定进程的 socket 队列状态 |
 
 #### `disk` 模块
 
@@ -690,6 +896,9 @@ make all
 | `get_udp_sockets()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | 所有 UDP 套接字（IPv4+IPv6） |
 | `get_all_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | 所有 TCP+UDP 套接字 |
 | `get_socket_summary()` | `Result<SocketStateSummary>` | 各状态连接数汇总 |
+| `get_connections_by_pid(pid)` | `Result<Vec<SocketConnectionEvent>>` | 获取指定进程的 socket 连接 |
+| `get_process_socket_stats(pid)` | `Result<Vec<SocketStats>>` | 获取进程 socket I/O 统计 |
+| `get_process_socket_queues(pid)` | `Result<Vec<SocketQueueInfo>>` | 获取进程 socket 队列信息 |
 | `get_tcp4_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | 仅 TCP IPv4 |
 | `get_tcp6_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | 仅 TCP IPv6 |
 | `get_udp4_sockets()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | 仅 UDP IPv4 |

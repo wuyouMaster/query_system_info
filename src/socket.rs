@@ -201,7 +201,9 @@ mod linux {
         SockDiagMessage,
     };
     use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr as NetlinkSocketAddr};
+    use std::collections::HashSet;
     use std::fs;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
@@ -579,7 +581,7 @@ mod linux {
                 let local = sockaddr_to_socket_addr(&local_addr);
                 let remote = sockaddr_to_socket_addr(&remote_addr);
 
-                let protocol = if tcp_info.tcpi_family as i32 == libc::AF_INET6 {
+                let protocol = if local.is_ipv6() {
                     SocketProtocol::TcpV6
                 } else {
                     SocketProtocol::TcpV4
@@ -590,9 +592,9 @@ mod linux {
                     fd: fd_num,
                     protocol,
                     local_addr: local,
-                    remote_addr: remote,
-                    bytes_sent: tcp_info.tcpi_bytes_sent,
-                    bytes_received: tcp_info.tcpi_bytes_received,
+                    remote_addr: Some(remote),
+                    bytes_sent: 0,
+                    bytes_received: 0,
                 });
             }
 

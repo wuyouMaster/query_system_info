@@ -145,6 +145,8 @@ pub struct SystemSummary {
 mod tests {
     use super::*;
 
+    include!("tests.rs");
+
     #[test]
     fn test_get_system_summary() {
         let summary = get_system_summary();

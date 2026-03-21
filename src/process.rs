@@ -321,17 +321,14 @@ pub fn get_process_io(pid: u32) -> Result<ProcessIoStats> {
 
 /// Get CPU usage percentage of a specific process (requires two samples with a delay).
 ///
-/// Returns the process CPU usage as a percentage of total available CPU,
+/// Returns the process CPU usage as a percentage of a single CPU core,
 /// where 100.0 means the process is using one full CPU core.
+/// Values can exceed 100% if the process uses multiple cores.
 ///
 /// # Arguments
 /// * `pid` - Process ID to monitor
 /// * `sample_duration` - Duration between the two samples
 pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64> {
-    let num_cpus = crate::cpu::get_cpu_info()
-        .map(|info| info.logical_cores as f64)
-        .unwrap_or(1.0);
-
     #[cfg(target_os = "linux")]
     {
         let cpu1 = linux::get_process_cpu_time_ns(pid)?;
@@ -344,7 +341,7 @@ pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64>
         if elapsed_s < f64::EPSILON {
             return Ok(0.0);
         }
-        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+        return Ok((cpu_delta_s / elapsed_s) * 100.0);
     }
 
     #[cfg(target_os = "macos")]
@@ -359,7 +356,7 @@ pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64>
         if elapsed_s < f64::EPSILON {
             return Ok(0.0);
         }
-        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+        return Ok((cpu_delta_s / elapsed_s) * 100.0);
     }
 
     #[cfg(target_os = "windows")]
@@ -374,7 +371,7 @@ pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64>
         if elapsed_s < f64::EPSILON {
             return Ok(0.0);
         }
-        return Ok((cpu_delta_s / elapsed_s) * 100.0 / num_cpus);
+        return Ok((cpu_delta_s / elapsed_s) * 100.0);
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -622,6 +619,7 @@ mod macos {
     use libproc::pid_rusage::{pidrusage, RUsageInfoV2};
     use libproc::proc_pid::pidinfo;
     use libproc::task_info::{TaskAllInfo, TaskInfo};
+    use mach2::mach_time::{mach_timebase_info, mach_timebase_info_data_t};
     use std::mem;
     use std::ptr;
 
@@ -933,9 +931,33 @@ mod macos {
         }
     }
 
+    /// Convert Mach absolute time units to nanoseconds.
+    ///
+    /// `pti_total_user` / `pti_total_system` from `PROC_PIDTASKINFO` are in Mach absolute
+    /// time units. The conversion ratio is hardware-specific and obtained via
+    /// `mach_timebase_info()`. Using u128 multiplication avoids overflow for large values.
+    fn mach_time_to_ns(mach_time: u64) -> u64 {
+        let mut info = mach_timebase_info_data_t { numer: 1, denom: 1 };
+        unsafe { mach_timebase_info(&mut info) };
+        if info.denom == 0 {
+            return mach_time;
+        }
+        (mach_time as u128 * info.numer as u128 / info.denom as u128) as u64
+    }
+
     pub fn get_process_cpu_time_ns(pid: u32) -> Result<u64> {
-        match pidinfo::<TaskInfo>(pid as i32, 0) {
-            Ok(info) => Ok(info.pti_total_user + info.pti_total_system),
+        // PROC_PIDTASKINFO is accessible for processes owned by the same UID and works
+        // more broadly than proc_pid_rusage. pti_total_user/pti_total_system are in
+        // Mach absolute time units and must be converted to nanoseconds.
+        if let Ok(info) = pidinfo::<TaskInfo>(pid as i32, 0) {
+            let total_mach = info.pti_total_user.saturating_add(info.pti_total_system);
+            return Ok(mach_time_to_ns(total_mach));
+        }
+
+        // Fall back to proc_pid_rusage — ri_user_time/ri_system_time are already in
+        // nanoseconds but this call may fail for processes owned by other users.
+        match pidrusage::<RUsageInfoV2>(pid as i32) {
+            Ok(info) => Ok(info.ri_user_time + info.ri_system_time),
             Err(_) => Err(SysInfoError::ProcessNotFound(pid)),
         }
     }

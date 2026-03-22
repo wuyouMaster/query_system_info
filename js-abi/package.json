@@ -1,11 +1,11 @@
 {
     "name": "js-query-system-info",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
   "n-api": {
     "name": "js-query-system-info",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "napi": {
     "targets": [

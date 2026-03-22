@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "py-query-system-info"
-version = "1.0.0"
+version = "1.0.1"
 description = "A cross-platform library for querying system information including memory, CPU, processes, disk I/O, and socket connections"
 authors = [
     { name = "wuyoumaster", email = "wuyoumaster@gmail.com" }

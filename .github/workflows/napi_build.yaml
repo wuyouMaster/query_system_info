@@ -306,6 +306,14 @@ jobs:
           path: ${{ github.workspace }}/js-abi/artifacts
       - name: Move artifacts
         run: yarn artifacts
+      - name: Copy index files for main package
+        run: |
+          # Copy index.js and index.d.ts to root for main package
+          if [ -f "dist/index.js" ]; then
+            cp dist/index.js ./index.js
+            cp dist/index.d.ts ./index.d.ts
+            echo "Copied index.js and index.d.ts to root"
+          fi
       - name: List packages
         run: ls -R ./npm
         shell: bash

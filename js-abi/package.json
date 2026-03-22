@@ -1,15 +1,20 @@
 {
     "name": "js-query-system-info",
-    "version": "1.0.0",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "version": "1.0.1",
+    "main": "index.js",
+    "types": "index.d.ts",
     "repository": {
         "type": "git",
         "url": "https://github.com/wuyouMaster/query_system_info"
     },
+    "files": [
+        "index.js",
+        "index.d.ts",
+        "index.*.node"
+    ],
   "n-api": {
     "name": "js-query-system-info",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "napi": {
     "targets": [

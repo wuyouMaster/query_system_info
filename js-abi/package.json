@@ -3,6 +3,10 @@
     "version": "1.0.0",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/wuyouMaster/query_system_info"
+    },
   "n-api": {
     "name": "js-query-system-info",
     "version": "1.0.0"

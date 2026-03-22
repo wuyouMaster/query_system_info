@@ -34,10 +34,10 @@
         "test": "node -e \"const { jsGetCpuInfo } = require('../dist/index.js'); const info = jsGetCpuInfo(); console.log('CPU Info:', info); console.log('Tests passed!');\""
     },
     "dependencies": {
-        "@napi-rs/cli": "^3.5.1",
-        "query_system_info": "file:.."
+        "@napi-rs/cli": "^3.5.1"
     },
     "devDependencies": {
+        "query_system_info": "file:..",
         "ts-node": "^10.0.0",
         "tsconfig-paths": "^4.0.0",
         "typescript": "^5.0.0"

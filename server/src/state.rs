@@ -3,9 +3,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::db::DbPool;
+
 #[derive(Clone)]
 pub struct AppState {
     pub trackers: Arc<RwLock<TrackerManager>>,
+    pub db: DbPool,
+    pub jwt_secret: String,
+    pub jwt_expiration: u64,
 }
 
 pub struct TrackerManager {
@@ -38,9 +43,12 @@ pub struct SocketEvent {
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(db: DbPool, jwt_secret: String, jwt_expiration: u64) -> Self {
         Self {
             trackers: Arc::new(RwLock::new(TrackerManager::new())),
+            db,
+            jwt_secret,
+            jwt_expiration,
         }
     }
 

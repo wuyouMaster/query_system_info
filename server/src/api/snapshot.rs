@@ -201,3 +201,53 @@ pub async fn socket_summary() -> Result<Json<SocketSummaryResponse>, (StatusCode
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
+
+#[derive(Serialize)]
+pub struct KillResponse {
+    pub pid: u32,
+    pub success: bool,
+    pub message: String,
+}
+
+pub async fn kill_process(
+    Path(pid): Path<u32>,
+) -> (StatusCode, Json<KillResponse>) {
+    let result = task::spawn_blocking(move || {
+        query_system_info::process::kill_process(pid)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => (
+            StatusCode::OK,
+            Json(KillResponse {
+                pid,
+                success: true,
+                message: format!("Process {} terminated", pid),
+            }),
+        ),
+        Ok(Err(e)) => {
+            let status = match &e {
+                query_system_info::SysInfoError::ProcessNotFound(_) => StatusCode::NOT_FOUND,
+                query_system_info::SysInfoError::PermissionDenied(_) => StatusCode::FORBIDDEN,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (
+                status,
+                Json(KillResponse {
+                    pid,
+                    success: false,
+                    message: e.to_string(),
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(KillResponse {
+                pid,
+                success: false,
+                message: e.to_string(),
+            }),
+        ),
+    }
+}

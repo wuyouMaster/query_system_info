@@ -1,0 +1,18 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3030
+  },
+  "database": {
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "username": "root",
+    "password": "your-password",
+    "database": "query_server"
+  },
+  "jwt": {
+    "secret": "your-secret-key-change-this-in-production",
+    "expiration_hours": 24
+  }
+}

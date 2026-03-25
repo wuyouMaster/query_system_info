@@ -1,35 +1,240 @@
 mod api;
+mod auth;
+mod config;
+mod db;
 mod state;
 #[cfg(test)]
 mod tests;
 
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{middleware, Router};
+use clap::Parser;
 use state::AppState;
 use tower_http::cors::CorsLayer;
+use tracing::{info, Level};
+use tracing_subscriber::FmtSubscriber;
+
+use crate::auth::JwtConfig;
+use crate::config::AppConfig;
+use crate::db::DbPool;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to config file
+    #[arg(short, long)]
+    config: Option<String>,
+
+    /// Server host
+    #[arg(long)]
+    host: Option<String>,
+
+    /// Server port
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Database type: sqlite or mysql
+    #[arg(long)]
+    db_type: Option<String>,
+
+    /// SQLite database path
+    #[arg(long)]
+    sqlite_path: Option<String>,
+
+    /// MySQL host
+    #[arg(long)]
+    mysql_host: Option<String>,
+
+    /// MySQL port
+    #[arg(long)]
+    mysql_port: Option<u16>,
+
+    /// MySQL username
+    #[arg(long)]
+    mysql_user: Option<String>,
+
+    /// MySQL password
+    #[arg(long)]
+    mysql_password: Option<String>,
+
+    /// MySQL database name
+    #[arg(long)]
+    mysql_database: Option<String>,
+
+    /// JWT secret
+    #[arg(long)]
+    jwt_secret: Option<String>,
+
+    /// JWT expiration in hours
+    #[arg(long)]
+    jwt_expiration: Option<u64>,
+}
+
+fn apply_args(config: &mut AppConfig, args: &Args) {
+    if let Some(host) = &args.host {
+        config.server.host = host.clone();
+    }
+    if let Some(port) = args.port {
+        config.server.port = port;
+    }
+    if let Some(db_type) = &args.db_type {
+        match db_type.as_str() {
+            "sqlite" => {
+                let path = args
+                    .sqlite_path
+                    .clone()
+                    .unwrap_or_else(|| "query_server.db".to_string());
+                config.database = config::DatabaseConfig::Sqlite { path };
+            }
+            "mysql" => {
+                config.database = config::DatabaseConfig::Mysql {
+                    host: args.mysql_host.clone().unwrap_or_else(|| "localhost".to_string()),
+                    port: args.mysql_port.unwrap_or(3306),
+                    username: args.mysql_user.clone().unwrap_or_else(|| "root".to_string()),
+                    password: args.mysql_password.clone().unwrap_or_default(),
+                    database: args.mysql_database.clone().unwrap_or_else(|| "query_server".to_string()),
+                };
+            }
+            _ => {
+                tracing::warn!("Unknown db type: {}, using default", db_type);
+            }
+        }
+    }
+    if let Some(secret) = &args.jwt_secret {
+        config.jwt.secret = secret.clone();
+    }
+    if let Some(exp) = args.jwt_expiration {
+        config.jwt.expiration_hours = exp;
+    }
+}
+
+// Middleware to inject JWT config into request extensions
+async fn jwt_config_middleware(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let state = req.extensions().get::<AppState>().cloned();
+    if let Some(state) = state {
+        let jwt_config = JwtConfig::new(state.jwt_secret.clone(), state.jwt_expiration);
+        req.extensions_mut().insert(jwt_config);
+    }
+    next.run(req).await
+}
+
+// JWT auth middleware
+async fn auth_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(header) if header.starts_with("Bearer ") => {
+            let token = &header[7..];
+            let state = req.extensions().get::<AppState>().cloned();
+
+            if let Some(state) = state {
+                let jwt_config = JwtConfig::new(state.jwt_secret, state.jwt_expiration);
+                match jwt_config.validate_token(token) {
+                    Ok(_claims) => next.run(req).await,
+                    Err(e) => {
+                        axum::response::Response::builder()
+                            .status(401)
+                            .body(axum::body::Body::from(format!("Invalid token: {}", e)))
+                            .unwrap()
+                    }
+                }
+            } else {
+                axum::response::Response::builder()
+                    .status(500)
+                    .body(axum::body::Body::from("Internal server error"))
+                    .unwrap()
+            }
+        }
+        _ => axum::response::Response::builder()
+            .status(401)
+            .body(axum::body::Body::from("Missing or invalid Authorization header"))
+            .unwrap(),
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    let state = AppState::new();
+    // Initialize tracing
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let app = Router::new()
+    // Parse command line arguments
+    let args = Args::parse();
+
+    // Load configuration
+    let mut app_config = AppConfig::load(args.config.as_deref()).expect("Failed to load config");
+
+    // Apply command line overrides
+    apply_args(&mut app_config, &args);
+
+    info!("Starting server with config: {:?}", app_config);
+
+    // Connect to database
+    let db_pool = DbPool::connect(&app_config)
+        .await
+        .expect("Failed to connect to database");
+
+    // Initialize database tables
+    db_pool
+        .init_tables()
+        .await
+        .expect("Failed to initialize database tables");
+
+    info!("Database initialized successfully");
+
+    // Create app state
+    let state = AppState::new(
+        db_pool,
+        app_config.jwt.secret.clone(),
+        app_config.jwt.expiration_hours,
+    );
+
+    // Create router
+    // Public routes (no auth required)
+    let public_routes = Router::new()
+        .route("/api/auth/register", post(api::auth::register))
+        .route("/api/auth/login", post(api::auth::login));
+
+    // Protected routes (auth required)
+    let protected_routes = Router::new()
         .route("/api/memory", get(api::snapshot::memory))
         .route("/api/cpu/info", get(api::snapshot::cpu_info))
         .route("/api/disks", get(api::snapshot::disks))
         .route("/api/processes", get(api::snapshot::processes))
-        .route("/api/processes/:pid", get(api::snapshot::process_by_pid))
+        .route(
+            "/api/processes/:pid",
+            get(api::snapshot::process_by_pid).delete(api::snapshot::kill_process),
+        )
         .route("/api/sockets", get(api::snapshot::socket_summary))
         .route("/api/stream/cpu", get(api::stream::cpu_usage))
         .route(
             "/api/stream/process/:pid",
             get(api::stream::process_tracker),
         )
+        .layer(middleware::from_fn(auth_middleware));
+
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
+        .layer(middleware::from_fn(jwt_config_middleware))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = "0.0.0.0:3030";
-    println!("Server listening on {}", addr);
+    // Start server
+    let addr = format!("{}:{}", app_config.server.host, app_config.server.port);
+    info!("Server listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

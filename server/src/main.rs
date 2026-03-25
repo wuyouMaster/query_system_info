@@ -68,6 +68,14 @@ struct Args {
     /// JWT expiration in hours
     #[arg(long)]
     jwt_expiration: Option<u64>,
+
+    /// Default admin username
+    #[arg(long)]
+    default_username: Option<String>,
+
+    /// Default admin password
+    #[arg(long)]
+    default_password: Option<String>,
 }
 
 fn apply_args(config: &mut AppConfig, args: &Args) {
@@ -106,23 +114,17 @@ fn apply_args(config: &mut AppConfig, args: &Args) {
     if let Some(exp) = args.jwt_expiration {
         config.jwt.expiration_hours = exp;
     }
-}
-
-// Middleware to inject JWT config into request extensions
-async fn jwt_config_middleware(
-    mut req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let state = req.extensions().get::<AppState>().cloned();
-    if let Some(state) = state {
-        let jwt_config = JwtConfig::new(state.jwt_secret.clone(), state.jwt_expiration);
-        req.extensions_mut().insert(jwt_config);
+    if let Some(username) = &args.default_username {
+        config.default_user.username = username.clone();
     }
-    next.run(req).await
+    if let Some(password) = &args.default_password {
+        config.default_user.password = password.clone();
+    }
 }
 
 // JWT auth middleware
 async fn auth_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -134,24 +136,15 @@ async fn auth_middleware(
     match auth_header {
         Some(header) if header.starts_with("Bearer ") => {
             let token = &header[7..];
-            let state = req.extensions().get::<AppState>().cloned();
-
-            if let Some(state) = state {
-                let jwt_config = JwtConfig::new(state.jwt_secret, state.jwt_expiration);
-                match jwt_config.validate_token(token) {
-                    Ok(_claims) => next.run(req).await,
-                    Err(e) => {
-                        axum::response::Response::builder()
-                            .status(401)
-                            .body(axum::body::Body::from(format!("Invalid token: {}", e)))
-                            .unwrap()
-                    }
+            let jwt_config = JwtConfig::new(state.jwt_secret, state.jwt_expiration);
+            match jwt_config.validate_token(token) {
+                Ok(_claims) => next.run(req).await,
+                Err(e) => {
+                    axum::response::Response::builder()
+                        .status(401)
+                        .body(axum::body::Body::from(format!("Invalid token: {}", e)))
+                        .unwrap()
                 }
-            } else {
-                axum::response::Response::builder()
-                    .status(500)
-                    .body(axum::body::Body::from("Internal server error"))
-                    .unwrap()
             }
         }
         _ => axum::response::Response::builder()
@@ -193,6 +186,40 @@ async fn main() {
 
     info!("Database initialized successfully");
 
+    // Create default admin user if no users exist
+    {
+        let user_count = match &db_pool {
+            DbPool::Sqlite(pool) => {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0)
+            }
+            DbPool::Mysql(pool) => {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0)
+            }
+        };
+
+        if user_count == 0 {
+            let username = &app_config.default_user.username;
+            let password = &app_config.default_user.password;
+            match db_pool.create_user(username, password).await {
+                Ok(user) => {
+                    info!(
+                        "Created default admin user: {} (id={})",
+                        username, user.id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create default admin user: {}", e);
+                }
+            }
+        }
+    }
+
     // Create app state
     let state = AppState::new(
         db_pool,
@@ -217,17 +244,26 @@ async fn main() {
             get(api::snapshot::process_by_pid).delete(api::snapshot::kill_process),
         )
         .route("/api/sockets", get(api::snapshot::socket_summary))
+        .route("/api/connections", get(api::snapshot::connections))
+        .route("/api/fs/list", get(api::snapshot::list_dir))
+        .route(
+            "/api/processes/:pid/socket-stats",
+            get(api::snapshot::process_socket_stats),
+        )
+        .route(
+            "/api/processes/:pid/socket-queues",
+            get(api::snapshot::process_socket_queues),
+        )
         .route("/api/stream/cpu", get(api::stream::cpu_usage))
         .route(
             "/api/stream/process/:pid",
             get(api::stream::process_tracker),
         )
-        .layer(middleware::from_fn(auth_middleware));
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
-        .layer(middleware::from_fn(jwt_config_middleware))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

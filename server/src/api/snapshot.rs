@@ -1,6 +1,6 @@
-use axum::extract::{Path, Json};
+use axum::extract::{Path, Json, Query};
 use axum::http::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::task;
 
 #[derive(Serialize)]
@@ -250,4 +250,168 @@ pub async fn kill_process(
             }),
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// New endpoints for system-monitor remote mode
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListDirQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct DirEntryResponse {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+pub async fn list_dir(
+    Query(params): Query<ListDirQuery>,
+) -> Result<Json<Vec<DirEntryResponse>>, (StatusCode, String)> {
+    let dir_path = params.path.clone();
+    task::spawn_blocking(move || {
+        let entries = std::fs::read_dir(&dir_path)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("list_dir({}): {}", dir_path, e)))?;
+
+        let mut result = Vec::new();
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let full_path = entry.path().to_string_lossy().to_string();
+            let is_dir = meta.is_dir();
+            let size = if is_dir { 0 } else { meta.len() };
+            result.push(DirEntryResponse {
+                name,
+                path: full_path,
+                is_dir,
+                size,
+            });
+        }
+        result.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        Ok(Json(result))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[derive(Serialize)]
+pub struct ConnectionResponse {
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub state: String,
+    pub pid: Option<u32>,
+    pub inode: u64,
+}
+
+pub async fn connections() -> Result<Json<Vec<ConnectionResponse>>, (StatusCode, String)> {
+    task::spawn_blocking(|| {
+        let all = query_system_info::socket::get_all_connections()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let mut result: Vec<ConnectionResponse> = all
+            .values()
+            .flatten()
+            .map(|c| ConnectionResponse {
+                protocol: c.protocol.to_string(),
+                local_addr: c.local_addr.to_string(),
+                remote_addr: c.remote_addr.map(|a| a.to_string()),
+                state: c.state.to_string(),
+                pid: c.pid,
+                inode: c.inode,
+            })
+            .collect();
+
+        result.truncate(50);
+        Ok(Json(result))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[derive(Serialize)]
+pub struct SocketStatsResponse {
+    pub pid: u32,
+    pub fd: u32,
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+pub async fn process_socket_stats(
+    Path(pid): Path<u32>,
+) -> Result<Json<Vec<SocketStatsResponse>>, (StatusCode, String)> {
+    task::spawn_blocking(move || {
+        let stats = query_system_info::socket::get_process_socket_stats(pid)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let response: Vec<SocketStatsResponse> = stats
+            .into_iter()
+            .map(|s| SocketStatsResponse {
+                pid: s.pid,
+                fd: s.fd,
+                protocol: s.protocol.to_string(),
+                local_addr: s.local_addr.to_string(),
+                remote_addr: s.remote_addr.map(|a| a.to_string()),
+                bytes_sent: s.bytes_sent,
+                bytes_received: s.bytes_received,
+            })
+            .collect();
+
+        Ok(Json(response))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[derive(Serialize)]
+pub struct SocketQueueResponse {
+    pub pid: u32,
+    pub fd: u32,
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub state: String,
+    pub recv_queue_bytes: u32,
+    pub recv_queue_hiwat: u32,
+    pub send_queue_bytes: u32,
+    pub send_queue_hiwat: u32,
+}
+
+pub async fn process_socket_queues(
+    Path(pid): Path<u32>,
+) -> Result<Json<Vec<SocketQueueResponse>>, (StatusCode, String)> {
+    task::spawn_blocking(move || {
+        let queues = query_system_info::socket::get_process_socket_queues(pid)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let response: Vec<SocketQueueResponse> = queues
+            .into_iter()
+            .map(|q| SocketQueueResponse {
+                pid: q.pid,
+                fd: q.fd,
+                protocol: q.protocol.to_string(),
+                local_addr: q.local_addr.to_string(),
+                remote_addr: q.remote_addr.map(|a| a.to_string()),
+                state: q.state.to_string(),
+                recv_queue_bytes: q.recv_queue_bytes,
+                recv_queue_hiwat: q.recv_queue_hiwat,
+                send_queue_bytes: q.send_queue_bytes,
+                send_queue_hiwat: q.send_queue_hiwat,
+            })
+            .collect();
+
+        Ok(Json(response))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }

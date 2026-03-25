@@ -5,6 +5,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub jwt: JwtConfig,
+    #[serde(default)]
+    pub default_user: DefaultUserConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,12 +36,28 @@ pub struct JwtConfig {
     pub expiration_hours: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultUserConfig {
+    pub username: String,
+    pub password: String,
+}
+
+impl Default for DefaultUserConfig {
+    fn default() -> Self {
+        Self {
+            username: "admin".to_string(),
+            password: "admin123".to_string(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             jwt: JwtConfig::default(),
+            default_user: DefaultUserConfig::default(),
         }
     }
 }

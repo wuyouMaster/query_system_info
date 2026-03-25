@@ -10,5 +10,9 @@
   "jwt": {
     "secret": "your-secret-key-change-this-in-production",
     "expiration_hours": 24
+  },
+  "default_user": {
+    "username": "admin",
+    "password": "admin123"
   }
 }

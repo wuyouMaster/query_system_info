@@ -10,6 +10,7 @@ A cross-platform system information library written in Rust. Supports querying m
 
 ## Table of Contents
 
+- [Changelog](#changelog)
 - [Features](#features)
 - [Platform Support](#platform-support)
 - [Project Structure](#project-structure)
@@ -23,6 +24,34 @@ A cross-platform system information library written in Rust. Supports querying m
 - [Cross Compilation](#cross-compilation)
 - [API Reference](#api-reference)
 - [License](#license)
+
+---
+
+## Changelog
+
+### 2026-03-26 — Server Mode + Cache Layer + Process Termination Notification
+
+**Server Mode (HTTP + SSE)**
+- axum-based HTTP server exposing system info REST API + SSE real-time streams
+- Snapshot endpoints: memory, CPU, disks, processes, sockets, connections, directory listing
+- Per-process endpoints: CPU usage, I/O read/write, socket stats, socket queues
+- SSE real-time streams: per-core CPU usage, child process / socket tracking
+- JWT authentication: user registration / login, protected route middleware
+- Three-layer config: config.json + CLI args + environment variables
+- SQLite / MySQL dual database support, auto table creation
+- Default admin user creation on first startup
+
+**Cache Layer + Ring Buffer**
+- `RingBuffer<T>` concurrent ring buffer (RwLock + AtomicUsize), zero-blocking API reads from cache
+- SnapshotCache: background timer refreshes system data (memory/CPU/disks/processes/connections)
+- CpuUsageCache: 1-second sampling in background, SSE clients share cached data (no more per-client 200ms blocking)
+- ProcessTraceCache: on-demand PID tracking with subscriber-count lifecycle management
+- `config.json` new `cache.ring_capacity` / `cpu_interval_ms` / `snapshot_interval_ms` fields
+
+**Process Termination Auto-Notification**
+- Server-side trace task auto-detects process death (2 consecutive misses stops tracking)
+- SSE sends `process_terminated` event, client auto-stops and shows dialog
+- 36 automated tests covering all endpoints
 
 ---
 

@@ -10,6 +10,7 @@
 
 ## 目录
 
+- [更新日志](#更新日志)
 - [功能特性](#功能特性)
 - [平台支持](#平台支持)
 - [项目结构](#项目结构)
@@ -23,6 +24,34 @@
 - [交叉编译](#交叉编译)
 - [API 参考](#api-参考)
 - [许可证](#许可证)
+
+---
+
+## 更新日志
+
+### 2026-03-26 — Server 模式 + 缓存层 + 进程终止通知
+
+**Server 模式（HTTP + SSE）**
+- 基于 axum 的 HTTP 服务器，暴露系统信息 REST API + SSE 实时流
+- Snapshot 端点：内存、CPU、磁盘、进程、套接字汇总、连接列表、目录浏览
+- 进程级端点：CPU 使用率、I/O 读写、Socket 统计、Socket 队列
+- SSE 实时流：按核心 CPU 使用率、进程子进程/套接字追踪
+- JWT 认证体系：用户注册 / 登录、受保护路由中间件
+- 三层配置：config.json + CLI 参数 + 环境变量
+- SQLite / MySQL 双数据库支持，自动建表
+- 支持配置默认管理员账户
+
+**缓存层 + 环形队列**
+- `RingBuffer<T>` 并发环形队列（RwLock + AtomicUsize），API 请求零阻塞读缓存
+- SnapshotCache：系统数据后台定时刷新（内存/CPU/磁盘/进程/连接）
+- CpuUsageCache：后台每秒采样，SSE 客户端共享缓存（不再每个客户端独立阻塞 200ms）
+- ProcessTraceCache：按需追踪 PID，订阅者计数管理生命周期
+- `config.json` 新增 `cache.ring_capacity` / `cpu_interval_ms` / `snapshot_interval_ms` 配置
+
+**进程终止自动通知**
+- Server 端追踪任务自动检测进程消失（连续 2 次未找到即停止追踪）
+- SSE 发送 `process_terminated` 事件，客户端收到后自动停止并弹窗提示
+- 36 个自动化测试覆盖全部端点
 
 ---
 

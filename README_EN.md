@@ -66,6 +66,12 @@ A cross-platform system information library written in Rust. Supports querying m
 | **Disk I/O** | Per-device read/write operations, bytes transferred, elapsed time |
 | **Network Sockets** | TCP/UDP connection list (IPv4/IPv6), state-grouped connections, state summary |
 | **System Summary** | Single call to snapshot all system information at once |
+| **Process I/O** | Per-process read/write bytes, read/write operation counts |
+| **Process CPU** | Per-process CPU usage percentage (with configurable sampling interval) |
+| **Socket I/O** | Per-socket send/receive byte counts |
+| **Socket Queues** | Receive/send queue current bytes and high water marks |
+| **Process Tracking** | Child process tracking, socket connection tracking, queue tracking |
+| **Process Management** | Cross-platform process termination (SIGKILL/TerminateProcess) |
 
 ---
 
@@ -136,6 +142,11 @@ Defines all common data structures used across the library:
 | `SocketProtocol` | Protocol enum: TcpV4 / TcpV6 / UdpV4 / UdpV6 |
 | `SocketState` | Connection state enum: 11 states including Established, Listen, TimeWait, CloseWait |
 | `SocketStateSummary` | Aggregated connection count per state |
+| `ProcessIoStats` | Process I/O statistics: read/write bytes, read/write operation counts |
+| `SocketStats` | Per-socket I/O statistics: send/receive byte counts |
+| `SocketQueueInfo` | Socket queue info: receive/send queue bytes and high water marks |
+| `SocketConnectionEvent` | Socket connection event: used for tracking new connections |
+| `ChildProcessEvent` | Child process event: used for tracking newly created child processes |
 
 ---
 
@@ -185,10 +196,22 @@ pub fn get_cpu_times() -> Result<Vec<CpuTimes>>
 ```rust
 pub fn list_processes() -> Result<Vec<ProcessInfo>>
 pub fn get_process_info(pid: u32) -> Result<ProcessInfo>
+pub fn get_process_io(pid: u32) -> Result<ProcessIoStats>
+pub fn get_process_cpu_usage(pid: u32, sample_duration: Duration) -> Result<f64>
+pub fn kill_process(pid: u32) -> Result<()>
+pub fn start_tracking_children(pid: u32, callback: impl Fn(ChildProcessEvent)) -> Result<ProcessTracker>
+pub fn start_tracking_sockets(pid: u32, callback: impl Fn(SocketConnectionEvent)) -> Result<ProcessSocketTracker>
+pub fn start_tracking_queues(pid: u32, callback: impl Fn(Vec<SocketQueueInfo>)) -> Result<ProcessQueueTracker>
 ```
 
 - `list_processes`: Enumerates all currently running processes.
 - `get_process_info`: Queries details for a specific PID.
+- `get_process_io`: Gets I/O statistics for a specific process (read/write bytes, operation counts).
+- `get_process_cpu_usage`: Calculates CPU usage percentage for a specific process by taking two samples.
+- `kill_process`: Cross-platform process termination (SIGKILL on Unix, TerminateProcess on Windows).
+- `start_tracking_children`: Continuously tracks all child processes of a given PID, triggering callback on new child creation.
+- `start_tracking_sockets`: Continuously tracks new socket connections for a specific process.
+- `start_tracking_queues`: Continuously tracks receive/send queue status for all sockets of a specific process.
 
 On Linux, reads from `/proc/[pid]/stat`, `/proc/[pid]/status`, `/proc/[pid]/cmdline`, and `/proc/[pid]/exe`. On macOS, uses `sysctl KERN_PROC`. On Windows, uses `EnumProcesses` + `OpenProcess`.
 
@@ -213,6 +236,9 @@ pub fn get_tcp_connections() -> Result<HashMap<SocketState, Vec<SocketConnection
 pub fn get_udp_sockets()     -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 pub fn get_all_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
 pub fn get_socket_summary()  -> Result<SocketStateSummary>
+pub fn get_connections_by_pid(pid: u32) -> Result<Vec<SocketConnectionEvent>>
+pub fn get_process_socket_stats(pid: u32) -> Result<Vec<SocketStats>>
+pub fn get_process_socket_queues(pid: u32) -> Result<Vec<SocketQueueInfo>>
 
 // Fine-grained queries
 pub fn get_tcp4_connections() -> Result<HashMap<SocketState, Vec<SocketConnection>>>
@@ -222,6 +248,11 @@ pub fn get_udp6_sockets()     -> Result<HashMap<SocketState, Vec<SocketConnectio
 ```
 
 Results are organized as a `HashMap` keyed by `SocketState` for fast filtering by connection state. `get_socket_summary` returns aggregate connection counts per state.
+
+New features:
+- `get_connections_by_pid`: Gets all socket connections for a specific process.
+- `get_process_socket_stats`: Gets socket I/O statistics for a specific process (send/receive bytes).
+- `get_process_socket_queues`: Gets receive/send queue status for all sockets of a specific process.
 
 ---
 
@@ -246,6 +277,23 @@ Built with [NAPI-RS](https://napi.rs/), wraps the core library as a native Node.
 
 All numeric values are exposed as `number` (`f64`) on the JavaScript side to avoid integer overflow issues.
 
+New functions:
+- `jsGetProcessIo(pid)`: Get process I/O statistics
+- `jsGetProcessCpuUsage(pid, sampleSecs)`: Get process CPU usage
+- `jsGetProcessSocketStats(pid)`: Get process socket I/O statistics
+- `jsGetProcessSocketQueues(pid)`: Get process socket queue information
+- `startTrackingSockets(pid, callback)`: Track process socket connections
+- `startTrackingQueues(pid, callback)`: Track process socket queues
+- `killProcess(pid)`: Kill a process
+- `listDir(path)`: List directory contents
+- `getTcpConnections()`: Get TCP connection list
+- `getUdpSockets()`: Get UDP socket list
+- `getConnectionByPid(pid)`: Find connection by PID
+- `getConnectionByInode(inode)`: Find connection by inode
+- `getConnectionByLocalAddr(addr)`: Find connection by local address
+- `getConnectionByRemoteAddr(addr)`: Find connection by remote address
+- `getConnectionByState(state)`: Filter connections by state
+
 ---
 
 ### `py-abi/` — Python Bindings
@@ -254,6 +302,20 @@ Built with [PyO3](https://pyo3.rs/) + [maturin](https://www.maturin.rs/), packag
 
 - `PySystemSummary` class: Same as the JS binding — collects all system info in one shot.
 - Standalone functions: `get_connections`, `get_processes`, `get_process_count`, `get_process_by_pid`, `get_connection_by_pid`, `get_connection_by_inode`, `get_connection_by_local_addr`, `get_connection_by_remote_addr`, `get_connection_by_state`, etc.
+
+New functions:
+- `get_process_io(pid)`: Get process I/O statistics
+- `get_process_cpu_usage(pid, sample_duration)`: Get process CPU usage
+- `get_process_socket_stats(pid)`: Get process socket I/O statistics
+- `get_process_socket_queues(pid)`: Get process socket queue information
+- `start_tracking_sockets(pid, callback)`: Track process socket connections
+- `start_tracking_queues(pid, callback)`: Track process socket queues
+- `kill_process(pid)`: Kill a process
+- `list_dir(path)`: List directory contents
+- `get_tcp_connections()`: Get TCP connection list
+- `get_udp_sockets()`: Get UDP socket list
+- `py_get_cpu_times()`: Get CPU time slice data
+- `py_get_disk_io_stats()`: Get disk I/O statistics
 
 ---
 
@@ -367,6 +429,36 @@ let tracker = process::start_tracking_children(1234, |child| {
 })?;
 // Stop tracking
 tracker.stop();
+
+// Track process socket connections
+let socket_tracker = process::start_tracking_sockets(std::process::id(), |event| {
+    println!("New connection: {} {} -> {:?} [{}]", 
+        event.protocol, event.local_addr, event.remote_addr, event.state);
+})?;
+std::thread::sleep(Duration::from_millis(500));
+socket_tracker.stop();
+
+// Track socket queue status
+let queue_tracker = process::start_tracking_queues(std::process::id(), |queues| {
+    for q in &queues {
+        println!("fd {}: recv={} send={}", q.fd, q.recv_queue_bytes, q.send_queue_bytes);
+    }
+})?;
+std::thread::sleep(Duration::from_millis(500));
+queue_tracker.stop();
+
+// Get process I/O statistics
+let io_stats = process::get_process_io(std::process::id())?;
+println!("Read: {} MB, Write: {} MB", 
+    io_stats.read_bytes / 1024 / 1024, 
+    io_stats.write_bytes / 1024 / 1024);
+
+// Get process CPU usage
+let cpu_usage = process::get_process_cpu_usage(std::process::id(), Duration::from_millis(500))?;
+println!("Process CPU usage: {:.1}%", cpu_usage);
+
+// Kill process (requires appropriate permissions)
+// process::kill_process(1234)?;
 ```
 
 #### Disk Information
@@ -430,6 +522,27 @@ if let Some(established) = tcp.get(&SocketState::Established) {
     for conn in established {
         println!("{} {} -> {:?}", conn.protocol, conn.local_addr, conn.remote_addr);
     }
+}
+
+// Get socket connections for a specific process
+let pid = std::process::id();
+let pid_conns = socket::get_connections_by_pid(pid)?;
+println!("Process {} has {} connections", pid, pid_conns.len());
+
+// Get process socket I/O statistics
+let socket_stats = socket::get_process_socket_stats(pid)?;
+for stat in &socket_stats {
+    println!("{}: sent {} MB, received {} MB", 
+        stat.local_addr, 
+        stat.bytes_sent / 1024 / 1024, 
+        stat.bytes_received / 1024 / 1024);
+}
+
+// Get process socket queue information
+let queues = socket::get_process_socket_queues(pid)?;
+for q in &queues {
+    println!("{}: recv_queue={} send_queue={}", 
+        q.local_addr, q.recv_queue_bytes, q.send_queue_bytes);
 }
 ```
 
@@ -562,6 +675,43 @@ const tracker = sysinfo.startTrackingChildren(1234, (child) => {
 });
 // Stop tracking
 tracker.stop();
+
+// ---- Socket connection tracking ----
+const socketTracker = sysinfo.startTrackingSockets(1234, (event) => {
+    console.log(`New connection: ${event.protocol} ${event.localAddr} -> ${event.remoteAddr}`);
+});
+// Stop tracking
+socketTracker.stop();
+
+// ---- Socket queue tracking ----
+const queueTracker = sysinfo.startTrackingQueues(1234, (queues) => {
+    console.log(`Queue update: ${queues.length} sockets`);
+});
+// Stop tracking
+queueTracker.stop();
+
+// ---- Get process I/O statistics ----
+const ioStats = sysinfo.jsGetProcessIo(1234);
+console.log(`Read: ${ioStats.readBytes / 1024 / 1024} MB, Write: ${ioStats.writeBytes / 1024 / 1024} MB`);
+
+// ---- Get process CPU usage ----
+const cpuUsage = sysinfo.jsGetProcessCpuUsage(1234, 0.5);
+console.log(`Process CPU usage: ${cpuUsage.toFixed(1)}%`);
+
+// ---- Get process socket statistics ----
+const socketStats = sysinfo.jsGetProcessSocketStats(1234);
+console.log(`Socket stats: ${socketStats.length} sockets`);
+
+// ---- Get process socket queues ----
+const socketQueues = sysinfo.jsGetProcessSocketQueues(1234);
+console.log(`Socket queues: ${socketQueues.length} sockets`);
+
+// ---- Kill process ----
+// sysinfo.killProcess(1234);
+
+// ---- List directory ----
+const entries = sysinfo.listDir('/tmp');
+console.log(`Directory contents: ${entries.length} items`);
 ```
 
 ---
@@ -640,6 +790,57 @@ def on_child(child):
 tracker = sysinfo.start_tracking_children(1234, on_child)
 # Stop tracking
 tracker.stop()
+
+# ---- Socket connection tracking ----
+def on_socket(event):
+    print(f"New connection: {event['protocol']} {event['local_addr']} -> {event['remote_addr']}")
+
+socket_tracker = sysinfo.start_tracking_sockets(1234, on_socket)
+# Stop tracking
+socket_tracker.stop()
+
+# ---- Socket queue tracking ----
+def on_queues(queues):
+    print(f"Queue update: {len(queues)} sockets")
+
+queue_tracker = sysinfo.start_tracking_queues(1234, on_queues)
+# Stop tracking
+queue_tracker.stop()
+
+# ---- Get process I/O statistics ----
+io_stats = sysinfo.get_process_io(1234)
+print(f"Read: {io_stats.read_bytes // 1024**2} MB, Write: {io_stats.write_bytes // 1024**2} MB")
+
+# ---- Get process CPU usage ----
+cpu_usage = sysinfo.get_process_cpu_usage(1234, 500)
+print(f"Process CPU usage: {cpu_usage:.1f}%")
+
+# ---- Get process socket statistics ----
+socket_stats = sysinfo.get_process_socket_stats(1234)
+print(f"Socket stats: {len(socket_stats)} sockets")
+
+# ---- Get process socket queues ----
+socket_queues = sysinfo.get_process_socket_queues(1234)
+print(f"Socket queues: {len(socket_queues)} sockets")
+
+# ---- Kill process ----
+# sysinfo.kill_process(1234)
+
+# ---- List directory ----
+entries = sysinfo.list_dir('/tmp')
+print(f"Directory contents: {len(entries)} items")
+
+# ---- Get TCP/UDP connections ----
+tcp_conns = sysinfo.get_tcp_connections()
+udp_socks = sysinfo.get_udp_sockets()
+
+# ---- Get CPU time slices ----
+cpu_times = sysinfo.py_get_cpu_times()
+print(f"CPU time slices: {len(cpu_times)} cores")
+
+# ---- Get disk I/O statistics ----
+disk_io = sysinfo.py_get_disk_io_stats()
+print(f"Disk I/O: {len(disk_io)} devices")
 ```
 
 ---
@@ -702,7 +903,12 @@ Supported platforms and their Rust targets:
 |----------|-------------|-------------|
 | `list_processes()` | `Result<Vec<ProcessInfo>>` | List all running processes |
 | `get_process_info(pid)` | `Result<ProcessInfo>` | Get info for a specific PID |
+| `get_process_io(pid)` | `Result<ProcessIoStats>` | Get process I/O statistics |
+| `get_process_cpu_usage(pid, duration)` | `Result<f64>` | Get process CPU usage (%) |
+| `kill_process(pid)` | `Result<()>` | Kill a specific process |
 | `start_tracking_children(pid, callback)` | `Result<ProcessTracker>` | Track all child processes of a given PID |
+| `start_tracking_sockets(pid, callback)` | `Result<ProcessSocketTracker>` | Track new socket connections for a process |
+| `start_tracking_queues(pid, callback)` | `Result<ProcessQueueTracker>` | Track socket queue status for a process |
 
 #### `disk` module
 
@@ -719,6 +925,9 @@ Supported platforms and their Rust targets:
 | `get_udp_sockets()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | All UDP sockets (IPv4 + IPv6) |
 | `get_all_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | All TCP + UDP sockets |
 | `get_socket_summary()` | `Result<SocketStateSummary>` | Aggregate connection counts by state |
+| `get_connections_by_pid(pid)` | `Result<Vec<SocketConnectionEvent>>` | Get socket connections for a process |
+| `get_process_socket_stats(pid)` | `Result<Vec<SocketStats>>` | Get process socket I/O statistics |
+| `get_process_socket_queues(pid)` | `Result<Vec<SocketQueueInfo>>` | Get process socket queue information |
 | `get_tcp4_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | TCP IPv4 only |
 | `get_tcp6_connections()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | TCP IPv6 only |
 | `get_udp4_sockets()` | `Result<HashMap<SocketState, Vec<SocketConnection>>>` | UDP IPv4 only |

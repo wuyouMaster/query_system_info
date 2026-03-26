@@ -1,11 +1,20 @@
 {
     "name": "js-query-system-info",
-    "version": "0.1.0",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "version": "1.0.2",
+    "main": "index.js",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/wuyouMaster/query_system_info"
+    },
+    "files": [
+        "index.js",
+        "index.d.ts",
+        "index.*.node"
+    ],
   "n-api": {
     "name": "js-query-system-info",
-    "version": "0.1.0"
+    "version": "1.0.2"
   },
   "napi": {
     "targets": [
@@ -25,10 +34,10 @@
         "test": "node -e \"const { jsGetCpuInfo } = require('../dist/index.js'); const info = jsGetCpuInfo(); console.log('CPU Info:', info); console.log('Tests passed!');\""
     },
     "dependencies": {
-        "@napi-rs/cli": "^3.5.1",
-        "query_system_info": "file:.."
+        "@napi-rs/cli": "^3.5.1"
     },
     "devDependencies": {
+        "query_system_info": "file:..",
         "ts-node": "^10.0.0",
         "tsconfig-paths": "^4.0.0",
         "typescript": "^5.0.0"

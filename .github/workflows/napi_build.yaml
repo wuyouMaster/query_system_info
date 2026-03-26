@@ -306,6 +306,23 @@ jobs:
           path: ${{ github.workspace }}/js-abi/artifacts
       - name: Move artifacts
         run: yarn artifacts
+      - name: Copy index files for main package
+        run: |
+          # Find index.js and index.d.ts from downloaded artifacts
+          index_file=$(find artifacts -name "index.js" | head -1)
+          dts_file=$(find artifacts -name "index.d.ts" | head -1)
+          if [ -n "$index_file" ]; then
+            cp "$index_file" ./index.js
+            echo "Copied $index_file to index.js"
+          else
+            echo "ERROR: index.js not found in artifacts" && exit 1
+          fi
+          if [ -n "$dts_file" ]; then
+            cp "$dts_file" ./index.d.ts
+            echo "Copied $dts_file to index.d.ts"
+          else
+            echo "ERROR: index.d.ts not found in artifacts" && exit 1
+          fi
       - name: List packages
         run: ls -R ./npm
         shell: bash

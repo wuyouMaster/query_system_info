@@ -44,6 +44,8 @@ pub struct TraceEvent {
     pub memory_sample: Option<MemorySample>,
     pub io_sample: Option<IoSample>,
     pub cpu_sample: Option<CpuSample>,
+    /// If set, the tracked process has terminated.
+    pub process_terminated: Option<u32>,
 }
 
 pub struct ProcessTraceCache {
@@ -120,6 +122,7 @@ impl ProcessTraceCache {
 
 fn start_trace_task(pid: u32, entry: Arc<TraceEntry>, mut cancel_rx: watch::Receiver<bool>) {
     tokio::spawn(async move {
+        let mut not_found_count: u32 = 0;
         loop {
             tokio::select! {
                 _ = cancel_rx.changed() => {
@@ -134,27 +137,54 @@ fn start_trace_task(pid: u32, entry: Arc<TraceEntry>, mut cancel_rx: watch::Rece
             }
 
             let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+
+            // Fetch process list and check if target process exists
+            let proc_list = match task::spawn_blocking(query_system_info::process::list_processes)
+                .await
+            {
+                Ok(Ok(procs)) => procs,
+                _ => continue,
+            };
+
+            let target = proc_list.into_iter().find(|p| p.pid == pid);
+
+            if target.is_none() {
+                not_found_count += 1;
+                if not_found_count >= 2 {
+                    tracing::info!(
+                        "Process {} not found twice in a row, stopping trace",
+                        pid
+                    );
+                    let _ = entry.event_tx.send(TraceEvent {
+                        memory_sample: None,
+                        io_sample: None,
+                        cpu_sample: None,
+                        process_terminated: Some(pid),
+                    });
+                    entry.tracking.store(false, Ordering::Relaxed);
+                    break;
+                }
+                continue;
+            }
+            not_found_count = 0;
+
+            let proc_info = target.unwrap();
             let entry_c = entry.clone();
             let ts_c = timestamp.clone();
 
             // Memory sample
-            if let Ok(Ok(procs)) = task::spawn_blocking(query_system_info::process::list_processes)
-                .await
-            {
-                if let Some(proc_info) = procs.into_iter().find(|p| p.pid == pid) {
-                    let mem = MemorySample {
-                        pid,
-                        timestamp: ts_c.clone(),
-                        memory_bytes: proc_info.memory_bytes,
-                    };
-                    entry_c.memory_samples.push(mem.clone());
-                    let _ = entry_c.event_tx.send(TraceEvent {
-                        memory_sample: Some(mem),
-                        io_sample: None,
-                        cpu_sample: None,
-                    });
-                }
-            }
+            let mem = MemorySample {
+                pid,
+                timestamp: ts_c,
+                memory_bytes: proc_info.memory_bytes,
+            };
+            entry_c.memory_samples.push(mem.clone());
+            let _ = entry_c.event_tx.send(TraceEvent {
+                memory_sample: Some(mem),
+                io_sample: None,
+                cpu_sample: None,
+                process_terminated: None,
+            });
 
             // IO sample
             let entry_c2 = entry.clone();
@@ -173,6 +203,7 @@ fn start_trace_task(pid: u32, entry: Arc<TraceEntry>, mut cancel_rx: watch::Rece
                     memory_sample: None,
                     io_sample: Some(sample),
                     cpu_sample: None,
+                    process_terminated: None,
                 });
             }
 
@@ -194,6 +225,7 @@ fn start_trace_task(pid: u32, entry: Arc<TraceEntry>, mut cancel_rx: watch::Rece
                     memory_sample: None,
                     io_sample: None,
                     cpu_sample: Some(sample),
+                    process_terminated: None,
                 });
             }
         }

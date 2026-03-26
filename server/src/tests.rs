@@ -37,10 +37,90 @@ async fn create_test_app() -> Router {
     .expect("Failed to create tables");
 
     let db = DbPool::Sqlite(db_pool);
+
+    let snapshot_cache =
+        crate::cache::snapshot::SnapshotCache::new(10);
+    let cpu_usage_cache =
+        crate::cache::cpu_usage::CpuUsageCache::new(10);
+    let trace_cache =
+        crate::cache::trace::ProcessTraceCache::new(10);
+
+    // Populate cache with real data for tests
+    if let Ok(mem) = query_system_info::memory::get_memory_info() {
+        snapshot_cache.memory.push(crate::api::snapshot::MemoryResponse {
+            total: mem.total,
+            available: mem.available,
+            used: mem.used,
+            free: mem.free,
+            usage_percent: mem.usage_percent,
+            swap_total: mem.swap_total,
+            swap_used: mem.swap_used,
+            swap_free: mem.swap_free,
+            cached: mem.cached,
+            buffers: mem.buffers,
+        });
+    }
+    if let Ok(cpu) = query_system_info::cpu::get_cpu_info() {
+        *snapshot_cache.cpu_info.write().unwrap() = Some(crate::api::snapshot::CpuInfoResponse {
+            physical_cores: cpu.physical_cores,
+            logical_cores: cpu.logical_cores,
+            model_name: cpu.model_name,
+            vendor: cpu.vendor,
+            frequency_mhz: cpu.frequency_mhz,
+        });
+    }
+    if let Ok(disks) = query_system_info::disk::get_disks() {
+        let resp: Vec<crate::api::snapshot::DiskResponse> = disks
+            .into_iter()
+            .map(|d| crate::api::snapshot::DiskResponse {
+                device: d.device,
+                mount_point: d.mount_point,
+                fs_type: d.fs_type,
+                total_bytes: d.total_bytes,
+                used_bytes: d.used_bytes,
+                available_bytes: d.available_bytes,
+                usage_percent: d.usage_percent,
+            })
+            .collect();
+        snapshot_cache.disks.push(resp);
+    }
+    if let Ok(procs) = query_system_info::process::list_processes() {
+        let resp: Vec<crate::api::snapshot::ProcessResponse> = procs
+            .into_iter()
+            .map(|p| crate::api::snapshot::ProcessResponse {
+                pid: p.pid,
+                ppid: p.ppid,
+                name: p.name,
+                exe_path: p.exe_path,
+                cmdline: p.cmdline,
+                state: p.state.to_string(),
+                memory_bytes: p.memory_bytes,
+                virtual_memory: p.virtual_memory,
+                cpu_percent: p.cpu_percent,
+                threads: p.threads,
+                start_time: p.start_time,
+                username: p.username,
+            })
+            .collect();
+        snapshot_cache.processes.push(resp);
+    }
+    if let Ok(summary) = query_system_info::socket::get_socket_summary() {
+        snapshot_cache.sockets.push(crate::api::snapshot::SocketSummaryResponse {
+            total: summary.total,
+            established: summary.established,
+            listen: summary.listen,
+            time_wait: summary.time_wait,
+            close_wait: summary.close_wait,
+        });
+    }
+
     let state = AppState::new(
         db,
         "test-secret-key-for-testing-only".to_string(),
         24,
+        snapshot_cache,
+        cpu_usage_cache,
+        trace_cache,
     );
 
     let state_clone = state.clone();
@@ -653,10 +733,16 @@ mod test_state {
             .expect("Failed to connect to test database");
 
         let db = DbPool::Sqlite(db_pool);
+        let snapshot_cache = crate::cache::snapshot::SnapshotCache::new(10);
+        let cpu_usage_cache = crate::cache::cpu_usage::CpuUsageCache::new(10);
+        let trace_cache = crate::cache::trace::ProcessTraceCache::new(10);
         let state = AppState::new(
             db,
             "test-secret".to_string(),
             24,
+            snapshot_cache,
+            cpu_usage_cache,
+            trace_cache,
         );
 
         let trackers = state.trackers.read().await;

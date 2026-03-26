@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::cache::cpu_usage::CpuUsageCache;
+use crate::cache::snapshot::SnapshotCache;
+use crate::cache::trace::ProcessTraceCache;
 use crate::db::DbPool;
 
 #[derive(Clone)]
@@ -11,6 +14,9 @@ pub struct AppState {
     pub db: DbPool,
     pub jwt_secret: String,
     pub jwt_expiration: u64,
+    pub snapshot_cache: Arc<SnapshotCache>,
+    pub cpu_usage_cache: Arc<CpuUsageCache>,
+    pub trace_cache: Arc<ProcessTraceCache>,
 }
 
 pub struct TrackerManager {
@@ -43,12 +49,22 @@ pub struct SocketEvent {
 }
 
 impl AppState {
-    pub fn new(db: DbPool, jwt_secret: String, jwt_expiration: u64) -> Self {
+    pub fn new(
+        db: DbPool,
+        jwt_secret: String,
+        jwt_expiration: u64,
+        snapshot_cache: Arc<SnapshotCache>,
+        cpu_usage_cache: Arc<CpuUsageCache>,
+        trace_cache: Arc<ProcessTraceCache>,
+    ) -> Self {
         Self {
             trackers: Arc::new(RwLock::new(TrackerManager::new())),
             db,
             jwt_secret,
             jwt_expiration,
+            snapshot_cache,
+            cpu_usage_cache,
+            trace_cache,
         }
     }
 

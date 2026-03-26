@@ -1,9 +1,12 @@
 use axum::extract::{Path, Json, Query};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::task;
 
-#[derive(Serialize)]
+use crate::state::AppState;
+
+#[derive(Serialize, Clone)]
 pub struct MemoryResponse {
     pub total: u64,
     pub available: u64,
@@ -17,7 +20,7 @@ pub struct MemoryResponse {
     pub buffers: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CpuInfoResponse {
     pub physical_cores: u32,
     pub logical_cores: u32,
@@ -26,7 +29,7 @@ pub struct CpuInfoResponse {
     pub frequency_mhz: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct DiskResponse {
     pub device: String,
     pub mount_point: String,
@@ -37,7 +40,7 @@ pub struct DiskResponse {
     pub usage_percent: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ProcessResponse {
     pub pid: u32,
     pub ppid: u32,
@@ -53,7 +56,7 @@ pub struct ProcessResponse {
     pub username: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct SocketSummaryResponse {
     pub total: usize,
     pub established: usize,
@@ -62,145 +65,116 @@ pub struct SocketSummaryResponse {
     pub close_wait: usize,
 }
 
-pub async fn memory() -> Result<Json<MemoryResponse>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let mem = query_system_info::memory::get_memory_info()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+// ---------------------------------------------------------------------------
+// Cached handlers — read from SnapshotCache instead of direct system calls
+// ---------------------------------------------------------------------------
 
-        Ok(Json(MemoryResponse {
-            total: mem.total,
-            available: mem.available,
-            used: mem.used,
-            free: mem.free,
-            usage_percent: mem.usage_percent,
-            swap_total: mem.swap_total,
-            swap_used: mem.swap_used,
-            swap_free: mem.swap_free,
-            cached: mem.cached,
-            buffers: mem.buffers,
-        }))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+pub async fn memory(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<MemoryResponse> {
+    match state.snapshot_cache.memory.latest() {
+        Some(m) => Json(m),
+        None => Json(MemoryResponse {
+            total: 0,
+            available: 0,
+            used: 0,
+            free: 0,
+            usage_percent: 0.0,
+            swap_total: 0,
+            swap_used: 0,
+            swap_free: 0,
+            cached: 0,
+            buffers: 0,
+        }),
+    }
 }
 
-pub async fn cpu_info() -> Result<Json<CpuInfoResponse>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let cpu = query_system_info::cpu::get_cpu_info()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        Ok(Json(CpuInfoResponse {
-            physical_cores: cpu.physical_cores,
-            logical_cores: cpu.logical_cores,
-            model_name: cpu.model_name,
-            vendor: cpu.vendor,
-            frequency_mhz: cpu.frequency_mhz,
-        }))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+pub async fn cpu_info(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<CpuInfoResponse> {
+    let guard = state.snapshot_cache.cpu_info.read().unwrap();
+    match guard.as_ref() {
+        Some(info) => Json(info.clone()),
+        None => Json(CpuInfoResponse {
+            physical_cores: 0,
+            logical_cores: 0,
+            model_name: String::new(),
+            vendor: String::new(),
+            frequency_mhz: 0,
+        }),
+    }
 }
 
-pub async fn disks() -> Result<Json<Vec<DiskResponse>>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let disks = query_system_info::disk::get_disks()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let response: Vec<DiskResponse> = disks
-            .into_iter()
-            .map(|d| DiskResponse {
-                device: d.device,
-                mount_point: d.mount_point,
-                fs_type: d.fs_type,
-                total_bytes: d.total_bytes,
-                used_bytes: d.used_bytes,
-                available_bytes: d.available_bytes,
-                usage_percent: d.usage_percent,
-            })
-            .collect();
-
-        Ok(Json(response))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+pub async fn disks(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Vec<DiskResponse>> {
+    Json(state.snapshot_cache.disks.latest().unwrap_or_default())
 }
 
-pub async fn processes() -> Result<Json<Vec<ProcessResponse>>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let processes = query_system_info::process::list_processes()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let response: Vec<ProcessResponse> = processes
-            .into_iter()
-            .map(|p| ProcessResponse {
-                pid: p.pid,
-                ppid: p.ppid,
-                name: p.name,
-                exe_path: p.exe_path,
-                cmdline: p.cmdline,
-                state: p.state.to_string(),
-                memory_bytes: p.memory_bytes,
-                virtual_memory: p.virtual_memory,
-                cpu_percent: p.cpu_percent,
-                threads: p.threads,
-                start_time: p.start_time,
-                username: p.username,
-            })
-            .collect();
-
-        Ok(Json(response))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+pub async fn processes(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Vec<ProcessResponse>> {
+    Json(
+        state
+            .snapshot_cache
+            .processes
+            .latest()
+            .unwrap_or_default(),
+    )
 }
 
 pub async fn process_by_pid(
+    axum::extract::State(state): axum::extract::State<AppState>,
     Path(pid): Path<u32>,
 ) -> Result<Json<ProcessResponse>, (StatusCode, String)> {
-    task::spawn_blocking(move || {
-        let processes = query_system_info::process::list_processes()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let process = processes
-            .into_iter()
-            .find(|p| p.pid == pid)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Process {} not found", pid)))?;
-
-        Ok(Json(ProcessResponse {
-            pid: process.pid,
-            ppid: process.ppid,
-            name: process.name,
-            exe_path: process.exe_path,
-            cmdline: process.cmdline,
-            state: process.state.to_string(),
-            memory_bytes: process.memory_bytes,
-            virtual_memory: process.virtual_memory,
-            cpu_percent: process.cpu_percent,
-            threads: process.threads,
-            start_time: process.start_time,
-            username: process.username,
-        }))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    let procs = state.snapshot_cache.processes.latest().unwrap_or_default();
+    procs
+        .into_iter()
+        .find(|p| p.pid == pid)
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Process {} not found", pid)))
 }
 
-pub async fn socket_summary() -> Result<Json<SocketSummaryResponse>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let summary = query_system_info::socket::get_socket_summary()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        Ok(Json(SocketSummaryResponse {
-            total: summary.total,
-            established: summary.established,
-            listen: summary.listen,
-            time_wait: summary.time_wait,
-            close_wait: summary.close_wait,
-        }))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+pub async fn socket_summary(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<SocketSummaryResponse> {
+    match state.snapshot_cache.sockets.latest() {
+        Some(s) => Json(s),
+        None => Json(SocketSummaryResponse {
+            total: 0,
+            established: 0,
+            listen: 0,
+            time_wait: 0,
+            close_wait: 0,
+        }),
+    }
 }
+
+#[derive(Serialize, Clone)]
+pub struct ConnectionResponse {
+    pub protocol: String,
+    pub local_addr: String,
+    pub remote_addr: Option<String>,
+    pub state: String,
+    pub pid: Option<u32>,
+    pub inode: u64,
+}
+
+pub async fn connections(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Vec<ConnectionResponse>> {
+    Json(
+        state
+            .snapshot_cache
+            .connections
+            .latest()
+            .unwrap_or_default(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Non-cached handlers — direct system calls (writes, per-PID, file system)
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct KillResponse {
@@ -209,13 +183,8 @@ pub struct KillResponse {
     pub message: String,
 }
 
-pub async fn kill_process(
-    Path(pid): Path<u32>,
-) -> (StatusCode, Json<KillResponse>) {
-    let result = task::spawn_blocking(move || {
-        query_system_info::process::kill_process(pid)
-    })
-    .await;
+pub async fn kill_process(Path(pid): Path<u32>) -> (StatusCode, Json<KillResponse>) {
+    let result = task::spawn_blocking(move || query_system_info::process::kill_process(pid)).await;
 
     match result {
         Ok(Ok(_)) => (
@@ -251,10 +220,6 @@ pub async fn kill_process(
         ),
     }
 }
-
-// ---------------------------------------------------------------------------
-// New endpoints for system-monitor remote mode
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub struct ListDirQuery {
@@ -295,41 +260,6 @@ pub async fn list_dir(
             });
         }
         result.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
-        Ok(Json(result))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-}
-
-#[derive(Serialize)]
-pub struct ConnectionResponse {
-    pub protocol: String,
-    pub local_addr: String,
-    pub remote_addr: Option<String>,
-    pub state: String,
-    pub pid: Option<u32>,
-    pub inode: u64,
-}
-
-pub async fn connections() -> Result<Json<Vec<ConnectionResponse>>, (StatusCode, String)> {
-    task::spawn_blocking(|| {
-        let all = query_system_info::socket::get_all_connections()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let mut result: Vec<ConnectionResponse> = all
-            .values()
-            .flatten()
-            .map(|c| ConnectionResponse {
-                protocol: c.protocol.to_string(),
-                local_addr: c.local_addr.to_string(),
-                remote_addr: c.remote_addr.map(|a| a.to_string()),
-                state: c.state.to_string(),
-                pid: c.pid,
-                inode: c.inode,
-            })
-            .collect();
-
-        result.truncate(50);
         Ok(Json(result))
     })
     .await
@@ -411,6 +341,53 @@ pub async fn process_socket_queues(
             .collect();
 
         Ok(Json(response))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[derive(Serialize)]
+pub struct ProcessIoResponse {
+    pub pid: u32,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+}
+
+pub async fn process_io(
+    Path(pid): Path<u32>,
+) -> Result<Json<ProcessIoResponse>, (StatusCode, String)> {
+    task::spawn_blocking(move || {
+        match query_system_info::process::get_process_io(pid) {
+            Ok(io) => Ok(Json(ProcessIoResponse {
+                pid,
+                read_bytes: io.read_bytes,
+                write_bytes: io.write_bytes,
+            })),
+            Err(_) => Ok(Json(ProcessIoResponse {
+                pid,
+                read_bytes: 0,
+                write_bytes: 0,
+            })),
+        }
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[derive(Serialize)]
+pub struct ProcessCpuUsageResponse {
+    pub pid: u32,
+    pub cpu_percent: f64,
+}
+
+pub async fn process_cpu_usage(
+    Path(pid): Path<u32>,
+) -> Result<Json<ProcessCpuUsageResponse>, (StatusCode, String)> {
+    task::spawn_blocking(move || {
+        let cpu_percent =
+            query_system_info::process::get_process_cpu_usage(pid, Duration::from_millis(200))
+                .unwrap_or(0.0);
+        Ok(Json(ProcessCpuUsageResponse { pid, cpu_percent }))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

@@ -7,6 +7,8 @@ pub struct AppConfig {
     pub jwt: JwtConfig,
     #[serde(default)]
     pub default_user: DefaultUserConfig,
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +44,36 @@ pub struct DefaultUserConfig {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    #[serde(default = "default_ring_capacity")]
+    pub ring_capacity: usize,
+    #[serde(default = "default_cpu_interval_ms")]
+    pub cpu_interval_ms: u64,
+    #[serde(default = "default_snapshot_interval_ms")]
+    pub snapshot_interval_ms: u64,
+}
+
+fn default_ring_capacity() -> usize {
+    120
+}
+fn default_cpu_interval_ms() -> u64 {
+    1000
+}
+fn default_snapshot_interval_ms() -> u64 {
+    1500
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            ring_capacity: default_ring_capacity(),
+            cpu_interval_ms: default_cpu_interval_ms(),
+            snapshot_interval_ms: default_snapshot_interval_ms(),
+        }
+    }
+}
+
 impl Default for DefaultUserConfig {
     fn default() -> Self {
         Self {
@@ -58,6 +90,7 @@ impl Default for AppConfig {
             database: DatabaseConfig::default(),
             jwt: JwtConfig::default(),
             default_user: DefaultUserConfig::default(),
+            cache: CacheConfig::default(),
         }
     }
 }

@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod cache;
 mod config;
 mod db;
 mod state;
@@ -10,6 +11,7 @@ use axum::routing::{get, post};
 use axum::{middleware, Router};
 use clap::Parser;
 use state::AppState;
+use tokio::task;
 use tower_http::cors::CorsLayer;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -220,11 +222,44 @@ async fn main() {
         }
     }
 
+    // Create caches
+    let snapshot_cache = cache::snapshot::SnapshotCache::new(app_config.cache.ring_capacity);
+    let cpu_usage_cache = cache::cpu_usage::CpuUsageCache::new(app_config.cache.ring_capacity);
+    let trace_cache = cache::trace::ProcessTraceCache::new(app_config.cache.ring_capacity);
+
+    // Populate cpu_info (static, one-shot)
+    if let Ok(Ok(cpu)) = task::spawn_blocking(query_system_info::cpu::get_cpu_info).await {
+        snapshot_cache
+            .cpu_info
+            .write()
+            .unwrap()
+            .replace(api::snapshot::CpuInfoResponse {
+                physical_cores: cpu.physical_cores,
+                logical_cores: cpu.logical_cores,
+                model_name: cpu.model_name,
+                vendor: cpu.vendor,
+                frequency_mhz: cpu.frequency_mhz,
+            });
+    }
+
+    // Start background cache refresh tasks
+    snapshot_cache.start_refresh(app_config.cache.snapshot_interval_ms);
+    cpu_usage_cache.start_sampling(app_config.cache.cpu_interval_ms);
+    info!(
+        "Cache started: ring_capacity={}, snapshot_interval={}ms, cpu_interval={}ms",
+        app_config.cache.ring_capacity,
+        app_config.cache.snapshot_interval_ms,
+        app_config.cache.cpu_interval_ms,
+    );
+
     // Create app state
     let state = AppState::new(
         db_pool,
         app_config.jwt.secret.clone(),
         app_config.jwt.expiration_hours,
+        snapshot_cache,
+        cpu_usage_cache,
+        trace_cache,
     );
 
     // Create router
@@ -253,6 +288,14 @@ async fn main() {
         .route(
             "/api/processes/:pid/socket-queues",
             get(api::snapshot::process_socket_queues),
+        )
+        .route(
+            "/api/processes/:pid/io",
+            get(api::snapshot::process_io),
+        )
+        .route(
+            "/api/processes/:pid/cpu-usage",
+            get(api::snapshot::process_cpu_usage),
         )
         .route("/api/stream/cpu", get(api::stream::cpu_usage))
         .route(

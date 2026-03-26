@@ -4,7 +4,7 @@
 
 # query_system_info
 
-A cross-platform system information library written in Rust. Supports querying memory, CPU, process, disk, and network socket information, with a built-in CLI tool, Node.js bindings, and Python bindings.
+A cross-platform system information library written in Rust. Supports querying memory, CPU, process, disk, and network socket information, with per-process dimension tracking (CPU, memory, socket rw queue, socket IO, disk IO). Includes a built-in CLI tool, Node.js bindings, and Python bindings.
 
 ---
 
@@ -27,7 +27,7 @@ A cross-platform system information library written in Rust. Supports querying m
 
 ---
 
-## Changelog
+## **Changelog**
 
 ### 2026-03-26 — Server Mode + Cache Layer + Process Termination Notification
 
@@ -65,13 +65,12 @@ A cross-platform system information library written in Rust. Supports querying m
 | **Disk** | Device name, mount point, filesystem type, total/used/available capacity, usage percentage |
 | **Disk I/O** | Per-device read/write operations, bytes transferred, elapsed time |
 | **Network Sockets** | TCP/UDP connection list (IPv4/IPv6), state-grouped connections, state summary |
-| **System Summary** | Single call to snapshot all system information at once |
 | **Process I/O** | Per-process read/write bytes, read/write operation counts |
 | **Process CPU** | Per-process CPU usage percentage (with configurable sampling interval) |
 | **Socket I/O** | Per-socket send/receive byte counts |
 | **Socket Queues** | Receive/send queue current bytes and high water marks |
-| **Process Tracking** | Child process tracking, socket connection tracking, queue tracking |
-| **Process Management** | Cross-platform process termination (SIGKILL/TerminateProcess) |
+| **Process Tracking** | Child process tracking, socket connection tracking, socket rw queue tracking, socket IO tracking, process memory tracking, process CPU tracking, process disk IO tracking |
+| **System Summary** | Single call to snapshot all system information at once |
 
 ---
 

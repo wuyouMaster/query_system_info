@@ -4,7 +4,7 @@
 
 # query_system_info
 
-一个跨平台系统信息查询库，使用 Rust 编写，支持内存、CPU、进程、磁盘及网络套接字信息的采集，并提供 CLI 工具、Node.js 绑定和 Python 绑定。
+一个跨平台系统信息查询库，使用 Rust 编写，支持内存、CPU、进程、磁盘及网络套接字信息的采集，并支持指定进程的维度指标追踪（cpu、memory、socket rw queue、socket io、 disk io），提供 CLI 工具、Node.js 绑定和 Python 绑定。
 
 ---
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 更新日志
+## **更新日志**
 
 ### 2026-03-26 — Server 模式 + 缓存层 + 进程终止通知
 
@@ -69,8 +69,7 @@
 | **进程 CPU** | 进程级 CPU 使用率（支持采样间隔） |
 | **Socket I/O** | 单个 socket 的发送/接收字节数 |
 | **Socket 队列** | 接收/发送队列当前字节数及高水位线 |
-| **进程追踪** | 子进程追踪、socket 连接追踪、队列追踪 |
-| **进程管理** | 跨平台杀死进程（SIGKILL/TerminateProcess） |
+| **进程追踪** | 子进程追踪、socket 连接追踪、socket rw队列追踪、socket io追踪、进程内存追踪、进程cpu追踪、进程磁盘io追踪|
 | **系统汇总** | 一次调用获取全部系统信息快照 |
 
 ---
